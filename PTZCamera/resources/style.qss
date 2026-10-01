@@ -1,0 +1,74 @@
+QWidget {
+    background: #10161d;
+    color: #dce5ed;
+    font-family: "Segoe UI";
+    font-size: 13px;
+}
+
+QWidget#panel {
+    background: #19222c;
+    border: 1px solid #2b3947;
+    border-radius: 6px;
+}
+
+QLabel#appHeading {
+    color: #e8f0f5;
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+
+QLabel#panelHeading {
+    color: #9eb0be;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+
+QLabel#modeBadge {
+    background: #243b48;
+    color: #8ed9ef;
+    border: 1px solid #365d6c;
+    border-radius: 4px;
+    padding: 5px 10px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+QLabel#infoName { color: #98a8b5; }
+QLabel#infoValue { color: #eff5f7; font-weight: 600; }
+QLabel#ptzMiddle { color: #718694; font-size: 11px; font-weight: 700; }
+QLabel#ptzHint { color: #8798a6; font-size: 11px; }
+QLabel#playbackStatus { color: #8795a3; font-size: 11px; }
+
+QPushButton, QComboBox, QLineEdit, QSpinBox {
+    background: #263440;
+    border: 1px solid #3b4d5b;
+    border-radius: 4px;
+    padding: 6px 9px;
+    color: #e5edf3;
+    min-height: 22px;
+}
+
+QPushButton:hover { background: #344756; border-color: #5b7890; }
+QPushButton:pressed { background: #1d303c; }
+QPushButton#primaryButton { background: #22607b; border-color: #357c99; }
+QPushButton#primaryButton:hover { background: #2a7797; }
+QPushButton#secondaryButton { background: #202d37; }
+QPushButton#ptzButton { font-size: 17px; font-weight: 700; }
+QPushButton#trackingToggle:checked { background: #246b55; border-color: #3a9a76; }
+
+QPlainTextEdit {
+    background: #111a22;
+    border: 1px solid #2b3947;
+    border-radius: 3px;
+    color: #bacbd6;
+    font-family: Consolas, monospace;
+    font-size: 12px;
+    padding: 7px;
+}
+
+QScrollArea { border: none; }
+QSplitter::handle { background: #10161d; width: 8px; }
+QScrollBar:vertical { background: #17212a; width: 9px; }
+QScrollBar::handle:vertical { background: #415260; border-radius: 4px; min-height: 24px; }

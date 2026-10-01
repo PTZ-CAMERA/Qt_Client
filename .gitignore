@@ -1,0 +1,20 @@
+# Local Qt Creator state and CMake output (at either project level).
+**/.qtcreator/
+**/CMakeLists.txt.user
+**/build/
+**/build-*/
+**/cmake-build-*/
+**/*.swp
+
+# Machine-local agent configuration and credentials.
+/.agents/
+/.aws/
+/.codex/
+
+# Editor and CMake files created outside the standard build directories.
+**/.vs/
+**/.vscode/
+**/CMakeCache.txt
+**/CMakeFiles/
+**/cmake_install.cmake
+**/build.ninja
