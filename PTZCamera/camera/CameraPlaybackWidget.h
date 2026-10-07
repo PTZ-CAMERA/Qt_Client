@@ -6,24 +6,26 @@
 #include <QRect>
 #include <QSize>
 #include <QString>
+#include <QUrl>
 #include <QWidget>
 
 class CameraWidget;
+class OnvifPanelWidget;
 class QComboBox;
 class QLabel;
-class QMediaPlayer;
+class QPushButton;
 class QStackedWidget;
 class QTimer;
-class QVideoWidget;
+class RtspPlayerWidget;
 #ifdef PTZ_WITH_WEBENGINE
-class QWebEngineView;
+class WebRtcPlayerWidget;
 #endif
 
 class CameraPlaybackWidget : public QWidget
 {
     Q_OBJECT
 public:
-    enum class Mode { WebRTC, RTSP };
+    enum class Mode { WebRTC, RtspTcp, RtspUdp };
     enum class State { Idle, Connecting, Playing, Failed };
 
     explicit CameraPlaybackWidget(QWidget *parent = nullptr);
@@ -37,28 +39,30 @@ public:
 signals:
     void statusChanged(CameraPlaybackWidget::State state, const QString &detail);
     void frameSizeChanged(const QSize &size);
+    void onvifMessage(const QString &message);
 
 private:
     void stopPlayers();
+    void updateOnvifControls();
     void setState(State state, const QString &detail = QString());
     void checkPlayback();
-    void pollWebRtc();
 
     QComboBox *m_modeSelector = nullptr;
+    QPushButton *m_onvifToggle = nullptr;
     QLabel *m_status = nullptr;
     QStackedWidget *m_stack = nullptr;
     CameraWidget *m_demoCamera = nullptr;
-    QVideoWidget *m_rtspView = nullptr;
-    QMediaPlayer *m_player = nullptr;
+    OnvifPanelWidget *m_onvifPanel = nullptr;
+    RtspPlayerWidget *m_rtspView = nullptr;
 #ifdef PTZ_WITH_WEBENGINE
-    QWebEngineView *m_webView = nullptr;
+    WebRtcPlayerWidget *m_webView = nullptr;
 #endif
     QTimer *m_watchdog = nullptr;
     QElapsedTimer m_progressClock;
+    QUrl m_rtspUrl;
     Mode m_activeMode = Mode::WebRTC;
     State m_state = State::Idle;
     QString m_stateDetail;
     bool m_running = false;
-    qint64 m_lastWebRtcFrames = -1;
-    int m_generation = 0;
+    bool m_onvifUrlReady = false;
 };

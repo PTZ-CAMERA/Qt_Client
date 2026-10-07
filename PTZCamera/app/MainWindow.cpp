@@ -1,10 +1,10 @@
 #include "MainWindow.h"
 
-#include "CameraPlaybackWidget.h"
-#include "ConnectionStatusWidget.h"
-#include "NetworkClient.h"
-#include "PTZControlWidget.h"
-#include "TrackingPanel.h"
+#include "camera/CameraPlaybackWidget.h"
+#include "network/NetworkClient.h"
+#include "ui/ConnectionStatusWidget.h"
+#include "ui/PTZControlWidget.h"
+#include "ui/TrackingPanel.h"
 
 #include <QDateTime>
 #include <QApplication>
@@ -189,6 +189,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_camera, &CameraPlaybackWidget::frameSizeChanged, this, [this](const QSize &size) {
         m_frameSize->setText(QStringLiteral("%1 x %2").arg(size.width()).arg(size.height()));
     });
+    connect(m_camera, &CameraPlaybackWidget::onvifMessage, this, [this](const QString &message) {
+        addLog(message);
+    });
     connect(m_network, &NetworkClient::protocolWarning, this, [this](const QString &message) {
         addLog(QStringLiteral("Protocol: %1").arg(message));
     });
@@ -280,6 +283,10 @@ void MainWindow::addLog(const QString &message)
 
 void MainWindow::sendPtz(const QString &direction)
 {
+    if (!m_network->isConnected()) {
+        addLog(QStringLiteral("PTZ %1 not sent: connect to Raspberry Pi first").arg(direction));
+        return;
+    }
     addLog(QStringLiteral("PTZ %1 command").arg(direction));
     m_network->sendPtzCommand(direction);
 }

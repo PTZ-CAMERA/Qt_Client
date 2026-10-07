@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TrackingInfo.h"
+#include "model/TrackingInfo.h"
 
 #include <QMainWindow>
 

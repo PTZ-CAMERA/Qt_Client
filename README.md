@@ -4,7 +4,8 @@ Raspberry Pi 카메라 영상과 객체 추적 상태를 표시하고 PTZ 명령
 
 ## 현재 기능
 
-- WebRTC 또는 RTSP 영상 재생 선택 (기본 WebRTC)
+- WebRTC, RTSP TCP, RTSP UDP 영상 재생 선택 (기본 WebRTC)
+- Qt 화면에서 ONVIF 카메라 검색 또는 서비스 주소 입력 후 RTSP URL 조회
 - PTZ 버튼, 방향키, `R` 키를 통한 원위치 명령
 - 추적 상태·객체 정보·연결 상태·시스템 로그 UI
 - Raspberry Pi 제어 서버에 연결하는 TCP 클라이언트 초안
