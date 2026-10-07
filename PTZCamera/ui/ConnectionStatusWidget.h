@@ -5,13 +5,16 @@
 class QLabel;
 class QLineEdit;
 class QSpinBox;
+class QPushButton;
 
 class ConnectionStatusWidget : public QWidget
 {
     Q_OBJECT
 public:
     enum class Status { Disconnected, Connected, Error };
-    explicit ConnectionStatusWidget(QWidget *parent = nullptr);
+    enum class Purpose { PiLegacy, VmsServer };
+    explicit ConnectionStatusWidget(QWidget *parent = nullptr, Purpose purpose = Purpose::PiLegacy);
+    void setServerStatus(Status status) { setRaspberryPiStatus(status); }
     void setRaspberryPiConnected(bool connected);
     void setCameraConnected(bool connected);
     void setRaspberryPiStatus(Status status);
@@ -30,4 +33,7 @@ private:
     QLabel *m_piText = nullptr;
     QLabel *m_cameraIndicator = nullptr;
     QLabel *m_cameraText = nullptr;
+    QPushButton *m_connectButton = nullptr;
+    QPushButton *m_disconnectButton = nullptr;
+    bool m_vmsServer = false;
 };

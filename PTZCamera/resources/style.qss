@@ -41,7 +41,7 @@ QLabel#ptzMiddle { color: #718694; font-size: 11px; font-weight: 700; }
 QLabel#ptzHint { color: #8798a6; font-size: 11px; }
 QLabel#playbackStatus { color: #8795a3; font-size: 11px; }
 
-QPushButton, QComboBox, QLineEdit, QSpinBox {
+QPushButton, QComboBox, QLineEdit, QSpinBox, QDateEdit, QTimeEdit {
     background: #263440;
     border: 1px solid #3b4d5b;
     border-radius: 4px;
@@ -55,6 +55,7 @@ QPushButton:pressed { background: #1d303c; }
 QPushButton#primaryButton { background: #22607b; border-color: #357c99; }
 QPushButton#primaryButton:hover { background: #2a7797; }
 QPushButton#secondaryButton { background: #202d37; }
+QPushButton#helpButton { padding: 0; min-height: 0; font-size: 18px; font-weight: 700; }
 QPushButton#ptzButton { font-size: 17px; font-weight: 700; }
 QPushButton#trackingToggle:checked { background: #246b55; border-color: #3a9a76; }
 
@@ -72,3 +73,16 @@ QScrollArea { border: none; }
 QSplitter::handle { background: #10161d; width: 8px; }
 QScrollBar:vertical { background: #17212a; width: 9px; }
 QScrollBar::handle:vertical { background: #415260; border-radius: 4px; min-height: 24px; }
+
+QListWidget, QTableView { background: #111a22; border: 1px solid #2b3947; }
+QListWidget::item { padding: 12px 8px; border-bottom: 1px solid #263440; }
+QListWidget::item:selected { background: #22607b; color: #ffffff; }
+QHeaderView::section { background: #263440; color: #9eb0be; padding: 5px; border: none; }
+QTableView::item:selected { background: #22607b; }
+QTabWidget::pane { border: 1px solid #2b3947; }
+QTabBar::tab { background: #19222c; padding: 7px 18px; color: #9eb0be; }
+QTabBar::tab:selected { background: #263440; color: #ffffff; }
+QLabel#cameraHeading { font-weight: 700; }
+QLabel#recordedVideo { background: #080c11; color: #8795a3; }
+QSplitter::handle:vertical { height: 7px; }
+QStatusBar { background: #19222c; }

@@ -1,368 +1,389 @@
+// UI controller. WebSocket/JSON parsing belongs to VmsClient.
 #include "MainWindow.h"
-
-#include "camera/CameraPlaybackWidget.h"
-#include "network/NetworkClient.h"
+#include "camera/CameraListWidget.h"
+#include "camera/CameraViewWidget.h"
+#include "demo/DummyDataProvider.h"
+#include "network/VmsClient.h"
+#include "device/DeviceInfoWidget.h"
+#include "events/EventSearchWidget.h"
+#include "log/SystemLogWidget.h"
+#include "playback/PlaybackWidget.h"
 #include "ui/ConnectionStatusWidget.h"
 #include "ui/PTZControlWidget.h"
+#include "ui/PtzKeyboardController.h"
+#include "ui/PtzCommandController.h"
+#include "ui/StatusIndicatorWidget.h"
 #include "ui/TrackingPanel.h"
-
-#include <QDateTime>
-#include <QApplication>
-#include <QComboBox>
-#include <QEvent>
+#include "ui/HelpDialog.h"
+#include <QCheckBox>
 #include <QFile>
-#include <QFont>
-#include <QGridLayout>
 #include <QHBoxLayout>
-#include <QImage>
-#include <QKeyEvent>
 #include <QLabel>
-#include <QLineEdit>
-#include <QPainter>
-#include <QPlainTextEdit>
 #include <QScrollArea>
-#include <QScrollBar>
-#include <QSpinBox>
 #include <QSplitter>
-#include <QTimer>
+#include <QStatusBar>
+#include <QTabWidget>
 #include <QVBoxLayout>
+#include <QPushButton>
+#include <QShortcut>
+#include <QHostAddress>
+#include <QSignalBlocker>
+#include <algorithm>
 
-MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
-{
-    setWindowTitle(QStringLiteral("PTZ Object Tracking Camera"));
-    setMinimumSize(1200, 750);
-    resize(1400, 850);
-
-    QFile styleFile(QStringLiteral(":/resources/style.qss"));
-    if (styleFile.open(QIODevice::ReadOnly))
-        setStyleSheet(QString::fromUtf8(styleFile.readAll()));
-
-    m_network = new NetworkClient(this);
-    qApp->installEventFilter(this);
-    auto *central = new QWidget(this);
-    setCentralWidget(central);
-    auto *page = new QVBoxLayout(central);
-    page->setContentsMargins(16, 14, 16, 14);
-    page->setSpacing(12);
-
+MainWindow::MainWindow(QWidget *parent, bool dummyMode) : QMainWindow(parent) {
+    setWindowTitle(QStringLiteral("Edge AI PTZ Mini VMS"));
+    setMinimumSize(1200, 750); resize(1400, 850);
+    QFile style(QStringLiteral(":/resources/style.qss"));
+    if (style.open(QIODevice::ReadOnly)) setStyleSheet(QString::fromUtf8(style.readAll()));
+    m_dummy = new DummyDataProvider(this); m_client = new VmsClient(this); m_keyboard = new PtzKeyboardController(this);
+    m_ptzCommands = new PtzCommandController(this);
+    auto *central = new QWidget(this); setCentralWidget(central);
+    auto *layout = new QVBoxLayout(central); layout->setContentsMargins(12, 10, 12, 10);
     auto *header = new QHBoxLayout;
-    auto *heading = new QLabel(QStringLiteral("PTZ  /  OBJECT TRACKING CAMERA"), this);
-    heading->setObjectName(QStringLiteral("appHeading"));
-    header->addWidget(heading);
-    header->addStretch();
-    m_mode = new QLabel(QStringLiteral("DEMO MODE"), this);
-    m_mode->setObjectName(QStringLiteral("modeBadge"));
-    header->addWidget(m_mode);
-    page->addLayout(header);
-
-    auto *horizontal = new QSplitter(Qt::Horizontal, this);
-    horizontal->setChildrenCollapsible(false);
-    m_camera = new CameraPlaybackWidget(this);
-    horizontal->addWidget(makePanel(QStringLiteral("CAMERA VIEW  /  CH 01"), m_camera));
-
-    auto *rightScroll = new QScrollArea(this);
-    rightScroll->setWidgetResizable(true);
-    rightScroll->setFrameShape(QFrame::NoFrame);
-    rightScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    rightScroll->setMinimumWidth(330);
-    auto *right = new QWidget(rightScroll);
-    auto *rightLayout = new QVBoxLayout(right);
-    rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->setSpacing(10);
-    m_connection = new ConnectionStatusWidget(this);
-    m_tracking = new TrackingPanel(this);
-    m_ptz = new PTZControlWidget(this);
-    rightLayout->addWidget(makePanel(QStringLiteral("CONNECTION"), m_connection));
-    rightLayout->addWidget(makePanel(QStringLiteral("TRACKING"), m_tracking));
+    auto *title = new QLabel(QStringLiteral("EDGE AI PTZ  /  MINI VMS"), this); title->setObjectName(QStringLiteral("appHeading"));
+    header->addWidget(title); header->addStretch();
+    m_dummyToggle = new QCheckBox(QStringLiteral("Dummy Mode / NO VMS NETWORK"), this); header->addWidget(m_dummyToggle);
+    m_headerVms = new StatusIndicatorWidget(QStringLiteral("VMS"), this); header->addWidget(m_headerVms);
+    auto *helpButton = new QPushButton(QStringLiteral("?"), this);
+    helpButton->setObjectName(QStringLiteral("helpButton")); helpButton->setFixedSize(32, 32);
+    helpButton->setToolTip(QStringLiteral("사용 도움말 (F1)")); header->addWidget(helpButton); layout->addLayout(header);
+    connect(helpButton, &QPushButton::clicked, this, [this] {
+        if (!m_help) m_help = new HelpDialog(this);
+        m_help->show(); m_help->raise(); m_help->activateWindow();
+    });
+    auto *helpShortcut = new QShortcut(QKeySequence(Qt::Key_F1), this);
+    connect(helpShortcut, &QShortcut::activated, helpButton, &QPushButton::click);
+    // 기존 중앙 영상과 오른쪽 패널에 목록을 추가하고 하단 탭은 세로 splitter로 조절한다.
+    auto *vertical = new QSplitter(Qt::Vertical, this); vertical->setChildrenCollapsible(false);
+    auto *top = new QSplitter(Qt::Horizontal, this); top->setChildrenCollapsible(false);
+    m_list = new CameraListWidget(this); top->addWidget(makePanel(QStringLiteral("CAMERAS"), m_list));
+    m_view = new CameraViewWidget(this); top->addWidget(makePanel(QStringLiteral("LIVE VIEW"), m_view));
+    auto *rightScroll = new QScrollArea(this); rightScroll->setWidgetResizable(true); rightScroll->setMinimumWidth(250);
+    rightScroll->setFrameShape(QFrame::NoFrame); rightScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto *right = new QWidget; auto *rightLayout = new QVBoxLayout(right); rightLayout->setContentsMargins(0, 0, 0, 0);
+    m_ptz = new PTZControlWidget(this); m_tracking = new TrackingPanel(this);
+    auto *unsupported = new QLabel(QStringLiteral("PTZ / Tracking: unavailable on current VMS"), this);
+    m_ptzNotice = unsupported;
+    unsupported->setWordWrap(true); unsupported->setObjectName(QStringLiteral("ptzHint"));
+    rightLayout->addWidget(unsupported);
+    m_ptz->setEnabled(false); m_tracking->setEnabled(false);
+    m_ptz->setToolTip(QStringLiteral("VMS PTZ API is not supported"));
+    m_tracking->setToolTip(QStringLiteral("VMS tracking/metadata API is not supported"));
+    connect(m_dummyToggle, &QCheckBox::toggled, unsupported, [unsupported](bool enabled) { unsupported->setVisible(!enabled); });
     rightLayout->addWidget(makePanel(QStringLiteral("PTZ CONTROL"), m_ptz));
-    rightLayout->addWidget(makePanel(QStringLiteral("OBJECT INFORMATION"), makeInformationPanel()));
-    rightLayout->addStretch();
-    rightScroll->setWidget(right);
-    horizontal->addWidget(rightScroll);
-    horizontal->setStretchFactor(0, 7);
-    horizontal->setStretchFactor(1, 3);
-    page->addWidget(horizontal, 1);
+    rightLayout->addWidget(makePanel(QStringLiteral("TRACKING / OBJECT INFORMATION"), m_tracking)); rightLayout->addStretch();
+    rightScroll->setWidget(right); top->addWidget(rightScroll);
+    top->setStretchFactor(0, 0); top->setStretchFactor(1, 1); top->setStretchFactor(2, 0); top->setSizes({200, 850, 280});
+    vertical->addWidget(top); m_tabs = new QTabWidget(this);
+    m_events = new EventSearchWidget(this); m_playback = new PlaybackWidget(this); m_device = new DeviceInfoWidget(this);
+    m_connection = new ConnectionStatusWidget(this, ConnectionStatusWidget::Purpose::VmsServer);
+    auto *devicePage = new QWidget(this); auto *deviceRow = new QHBoxLayout(devicePage);
+    deviceRow->addWidget(makePanel(QStringLiteral("VMS SERVER"), m_connection), 1); deviceRow->addWidget(m_device, 3);
+    m_log = new SystemLogWidget(this);
+    m_tabs->addTab(m_events, QStringLiteral("EVENTS")); m_tabs->addTab(m_playback, QStringLiteral("PLAYBACK"));
+    m_tabs->addTab(devicePage, QStringLiteral("DEVICE")); m_tabs->addTab(m_log, QStringLiteral("SYSTEM LOG"));
+    m_tabs->setTabEnabled(0, false); m_events->setEnabled(false);
+    m_tabs->setTabToolTip(0, QStringLiteral("Event API is not supported by the current VMS; dummy preview only"));
+    vertical->addWidget(m_tabs); vertical->setStretchFactor(0, 3); vertical->setStretchFactor(1, 1); vertical->setSizes({520, 250});
+    layout->addWidget(vertical, 1);
+    m_vmsStatus = new StatusIndicatorWidget(QStringLiteral("VMS"), this); m_cameraStatus = new StatusIndicatorWidget(QStringLiteral("Camera"), this);
+    m_streamStatus = new StatusIndicatorWidget(QStringLiteral("Stream"), this); m_recStatus = new StatusIndicatorWidget(QStringLiteral("REC"), this);
+    for (auto *indicator : {m_vmsStatus, m_cameraStatus, m_streamStatus, m_recStatus}) statusBar()->addWidget(indicator, 1);
 
-    m_log = new QPlainTextEdit(this);
-    m_log->setReadOnly(true);
-    m_log->setMaximumBlockCount(1000);
-    m_log->setMinimumHeight(95);
-    auto *logPanel = makePanel(QStringLiteral("SYSTEM LOG"), m_log);
-    logPanel->setMinimumHeight(145);
-    page->addWidget(logPanel);
-
-    connect(m_ptz, &PTZControlWidget::panLeftRequested, this, [this] { sendPtz(QStringLiteral("LEFT")); });
-    connect(m_ptz, &PTZControlWidget::panRightRequested, this, [this] { sendPtz(QStringLiteral("RIGHT")); });
-    connect(m_ptz, &PTZControlWidget::tiltUpRequested, this, [this] { sendPtz(QStringLiteral("UP")); });
-    connect(m_ptz, &PTZControlWidget::tiltDownRequested, this, [this] { sendPtz(QStringLiteral("DOWN")); });
-    connect(m_ptz, &PTZControlWidget::centerRequested, this, [this] { sendPtz(QStringLiteral("CENTER")); });
-    connect(m_tracking, &TrackingPanel::trackingChanged, this, [this](bool enabled) {
-        addLog(enabled ? QStringLiteral("Auto Tracking ENABLED") : QStringLiteral("Auto Tracking DISABLED"));
-        m_network->sendTrackingCommand(enabled);
-    });
-    connect(m_connection, &ConnectionStatusWidget::connectRequested, this,
-            [this](const QString &host, quint16 port) {
-                if (host.isEmpty()) {
-                    addLog(QStringLiteral("Connection failed: enter a host or IP"));
-                    m_connection->setRaspberryPiStatus(ConnectionStatusWidget::Status::Error);
-                    return;
-                }
-                m_demoEnabled = false;
-                setDemoStatus(false);
-                m_connection->setRaspberryPiStatus(ConnectionStatusWidget::Status::Disconnected);
-                addLog(QStringLiteral("Connecting to %1:%2...").arg(host).arg(port));
-                m_network->connectToServer(host, port);
-            });
-    connect(m_connection, &ConnectionStatusWidget::disconnectRequested, this, [this] {
-        m_network->disconnectFromServer();
-        m_connection->setRaspberryPiConnected(false);
-        addLog(QStringLiteral("Disconnect requested"));
-    });
-    connect(m_connection, &ConnectionStatusWidget::demoStatusRequested, this, [this] {
-        if (m_network->isConnected() || m_camera->isRunning()) {
-            addLog(QStringLiteral("Demo status unavailable during live connection"));
-            return;
+    connect(m_client, &VmsClient::message, this, &MainWindow::addLog);
+    connect(m_client, &VmsClient::serverConnectionChanged, this, [this](bool connected) {
+        if (m_dummy->isEnabled()) return;
+        const auto state = connected ? StatusIndicatorWidget::State::Active : StatusIndicatorWidget::State::Inactive;
+        const auto text = connected ? QStringLiteral("Connected") : QStringLiteral("Disconnected");
+        m_headerVms->setState(text, state); m_vmsStatus->setState(text, state);
+        m_connection->setServerStatus(connected ? ConnectionStatusWidget::Status::Connected : ConnectionStatusWidget::Status::Disconnected);
+        if (!connected) {
+            requestStop(); m_ptzCommands->setTarget(QString(), false);
+            m_discoveryRequestId.clear(); m_device->setDiscoveryState(false, QStringLiteral("Connect to VMS first"));
+            m_playback->setSearchAvailable(false);
+            m_view->setRecordingControls(false, false);
+            m_liveWanted = false; m_streamRequestPending = false; m_view->stopStream();
+            m_cameras.clear(); m_events->setCameras({}); m_events->setEvents({});
+            m_playback->setCameras({}); m_playback->clear(); m_playback->setRecordings({}); m_list->setCameras({});
         }
-        setDemoStatus(!m_demoStatus);
     });
-
-    connect(m_network, &NetworkClient::connected, this, [this] {
-        setDemoStatus(false);
-        m_connection->setRaspberryPiConnected(true);
-        addLog(QStringLiteral("Raspberry Pi connected"));
+    connect(m_client, &VmsClient::connectionError, this, [this](const QString &reason) {
+        if (m_dummy->isEnabled()) return;
+        addLog(QStringLiteral("VMS"), reason);
+        m_connection->setServerStatus(ConnectionStatusWidget::Status::Error);
     });
-    connect(m_network, &NetworkClient::disconnected, this, [this] {
-        m_connection->setRaspberryPiConnected(false);
-        addLog(QStringLiteral("Raspberry Pi disconnected"));
+    connect(m_client, &VmsClient::requestFailed, this, [this](const QString &id, const QString &code, const QString &reason) {
+        addLog(QStringLiteral("VMS"), QStringLiteral("Request %1: %2 — %3").arg(id, code, reason));
+        if (!m_discoveryRequestId.isEmpty() && id == m_discoveryRequestId) {
+            m_discoveryRequestId.clear(); m_device->setDiscoveryState(false, reason);
+        }
     });
-    connect(m_network, &NetworkClient::connectionError, this, [this](const QString &reason) {
-        m_connection->setRaspberryPiStatus(ConnectionStatusWidget::Status::Error);
-        addLog(QStringLiteral("Connection error: %1").arg(reason));
+    connect(m_client, &VmsClient::ptzFailed, this, [this](const QString &id, const QString &command, const QString &, const QString &) {
+        if (id == m_current.id && command != QStringLiteral("PTZ_STOP")) requestStop();
     });
-    connect(m_network, &NetworkClient::trackingInfoReceived, this, [this](const TrackingInfo &info) {
-        updateTrackingInfo(info);
-        if (m_tracking->trackingEnabled())
-            m_tracking->setState(TrackingPanel::State::Tracking);
-        addLog(QStringLiteral("%1 detected (%2, %3)").arg(info.label).arg(info.objectX).arg(info.objectY));
+    connect(m_client, &VmsClient::cameraListReceived, this, [this](const QList<CameraInfo> &cameras) {
+        if (m_dummy->isEnabled()) return;
+        m_cameras = cameras; m_events->setCameras(cameras); m_playback->setCameras(cameras); m_list->setCameras(cameras);
+        m_playback->setSearchAvailable(std::any_of(cameras.cbegin(), cameras.cend(), [](const CameraInfo &camera) { return camera.supportsRecordings; }));
+        if (!m_registerSelection.isEmpty()) m_list->selectCamera(m_registerSelection);
+        addLog(QStringLiteral("VMS"), QStringLiteral("Received %1 cameras").arg(cameras.size()));
     });
-    connect(m_network, &NetworkClient::noDetectionReceived, this, [this] {
-        clearTrackingInfo();
-        if (m_tracking->trackingEnabled())
-            m_tracking->setState(TrackingPanel::State::Lost);
-        addLog(QStringLiteral("Object lost"));
+    connect(m_client, &VmsClient::discoveryReceived, this, [this](const QList<DiscoveredCamera> &devices) {
+        if (m_dummy->isEnabled()) return;
+        m_discoveryRequestId.clear(); m_device->setDiscoveredCameras(devices);
+        addLog(QStringLiteral("ONVIF"), QStringLiteral("Found %1 cameras through VMS; select one or enter its ONVIF address").arg(devices.size()));
     });
-    connect(m_network, &NetworkClient::cameraConnectionChanged, this, [this](bool connected) {
-        addLog(connected ? QStringLiteral("Pi camera source connected")
-                         : QStringLiteral("Pi camera source disconnected"));
+    connect(m_client, &VmsClient::cameraRegistered, this, [this](const QString &id) {
+        m_registerSelection = id; m_device->cameraRegistered(id);
+        addLog(QStringLiteral("ONVIF"), QStringLiteral("%1 registered; opening VMS stream").arg(id));
     });
-    connect(m_camera, &CameraPlaybackWidget::statusChanged, this,
-            [this](CameraPlaybackWidget::State state, const QString &detail) {
-                switch (state) {
-                case CameraPlaybackWidget::State::Connecting:
-                    m_demoEnabled = false;
-                    m_videoActive = false;
-                    setDemoStatus(false);
-                    m_connection->setCameraConnected(false);
-                    m_mode->setText(QStringLiteral("CONNECTING VIDEO"));
-                    addLog(QStringLiteral("Video connecting: %1").arg(detail));
-                    break;
-                case CameraPlaybackWidget::State::Playing:
-                    m_videoActive = true;
-                    m_connection->setCameraConnected(true);
-                    m_mode->setText(QStringLiteral("LIVE VIDEO"));
-                    addLog(QStringLiteral("Video playing: %1").arg(detail));
-                    break;
-                case CameraPlaybackWidget::State::Failed:
-                    m_videoActive = false;
-                    m_connection->setCameraStatus(ConnectionStatusWidget::Status::Error);
-                    m_mode->setText(QStringLiteral("VIDEO ERROR"));
-                    addLog(QStringLiteral("Video connection failed: %1").arg(detail));
-                    break;
-                case CameraPlaybackWidget::State::Idle:
-                    m_videoActive = false;
-                    m_connection->setCameraConnected(false);
-                    m_mode->setText(QStringLiteral("NO VIDEO STREAM"));
-                    addLog(QStringLiteral("Video stopped"));
-                    break;
-                }
-            });
-    connect(m_camera, &CameraPlaybackWidget::frameSizeChanged, this, [this](const QSize &size) {
-        m_frameSize->setText(QStringLiteral("%1 x %2").arg(size.width()).arg(size.height()));
+    connect(m_client, &VmsClient::streamUriReady, this, [this](const QString &id, const QUrl &uri) {
+        m_streamRequestPending = false;
+        if (!m_dummy->isEnabled()) m_device->setStreamUri(id, uri);
+        if (m_dummy->isEnabled() || id != m_current.id || !m_liveWanted) return;
+        m_view->startStream(uri);
+        addLog(QStringLiteral("STREAM"), QStringLiteral("Opening VMS stream for %1").arg(id));
     });
-    connect(m_camera, &CameraPlaybackWidget::onvifMessage, this, [this](const QString &message) {
-        addLog(message);
+    connect(m_client, &VmsClient::streamError, this, [this](const QString &reason) {
+        m_device->setStreamQueryError(m_current.id, reason);
+        m_streamRequestPending = false; m_liveWanted = false; m_view->stopStream();
+        m_streamStatus->setState(QStringLiteral("Stream error"), StatusIndicatorWidget::State::Error);
+        addLog(QStringLiteral("STREAM"), reason);
     });
-    connect(m_network, &NetworkClient::protocolWarning, this, [this](const QString &message) {
-        addLog(QStringLiteral("Protocol: %1").arg(message));
+    connect(m_view, &CameraViewWidget::videoFrameReceived, this, [this](const QSize &) {
+        m_streamStatus->setState(QStringLiteral("Live (VMS)"), StatusIndicatorWidget::State::Active);
     });
-
-    clearTrackingInfo();
-    addLog(QStringLiteral("Application started"));
-    addLog(QStringLiteral("Waiting for Raspberry Pi..."));
-    addLog(QStringLiteral("Demo detection scheduled in 5 seconds"));
-    QTimer::singleShot(5000, this, [this] {
-        if (m_demoEnabled && !m_network->isConnected())
-            showDemoDetection();
+    connect(m_view, &CameraViewWidget::playbackError, this, [this](const QString &reason) {
+        m_liveWanted = false; m_streamRequestPending = false;
+        m_streamStatus->setState(QStringLiteral("Playback error"), StatusIndicatorWidget::State::Error); addLog(QStringLiteral("STREAM"), reason);
     });
+    connect(m_view, &CameraViewWidget::startRecordingRequested, this, [this] {
+        if (!m_dummy->isEnabled() && m_client->isConnected() && m_current.supportsRecordings && m_current.online && !m_current.recordingRequested)
+            m_client->request(QStringLiteral("START_RECORDING"), m_current.id);
+    });
+    connect(m_view, &CameraViewWidget::stopRecordingRequested, this, [this] {
+        if (!m_dummy->isEnabled() && m_client->isConnected() && m_current.supportsRecordings && m_current.recordingRequested)
+            m_client->request(QStringLiteral("STOP_RECORDING"), m_current.id);
+    });
+    connect(m_client, &VmsClient::recordingListReceived, this, [this](const QString &id, const QList<RecordingInfo> &recordings) {
+        if (!m_dummy->isEnabled() && id == m_playback->selectedCameraId()) {
+            m_playback->setRecordings(recordings);
+            addLog(QStringLiteral("REC"), QStringLiteral("%1: %2 recording results").arg(id).arg(recordings.size()));
+        }
+    });
+    connect(m_client, &VmsClient::recordingSearchFailed, this, [this](const QString &id, const QString &reason) {
+        if (!m_dummy->isEnabled() && id == m_playback->selectedCameraId()) m_playback->setSearchError(reason);
+    });
+    connect(m_playback, &PlaybackWidget::playbackFailed, this, [this](const QString &reason) { addLog(QStringLiteral("PLAYBACK"), reason); });
+    connect(m_playback, &PlaybackWidget::queryInvalidated, m_client, &VmsClient::cancelRecordingSearch);
+    connect(m_client, &VmsClient::cameraStatusChanged, this, [this](const CameraInfo &camera) {
+        if (!m_dummy->isEnabled()) applyCameraStatus(camera);
+    });
+    connect(m_dummy, &DummyDataProvider::message, this, &MainWindow::addLog);
+    connect(m_dummy, &DummyDataProvider::serverConnectionChanged, this, [this](bool connected) {
+        const auto state = connected ? StatusIndicatorWidget::State::Active : StatusIndicatorWidget::State::Inactive;
+        const QString text = connected ? QStringLiteral("Connected (DUMMY)") : QStringLiteral("Disconnected");
+        m_headerVms->setState(text, state); m_vmsStatus->setState(text, state);
+        // Dummy state does not represent a real socket; keep Connect available.
+        m_connection->setServerStatus(ConnectionStatusWidget::Status::Disconnected);
+    });
+    connect(m_dummy, &DummyDataProvider::cameraListReceived, this, [this](const QList<CameraInfo> &cameras) {
+        m_cameras = cameras; m_events->setCameras(cameras); m_playback->setCameras(cameras); m_list->setCameras(cameras);
+    });
+    connect(m_list, &CameraListWidget::cameraSelected, this, &MainWindow::selectCamera);
+    connect(m_dummy, &DummyDataProvider::cameraStatusChanged, this, &MainWindow::applyCameraStatus);
+    connect(m_dummy, &DummyDataProvider::frameReceived, this, [this](const QString &id, const QImage &frame) {
+        if (id != m_current.id) return;
+        m_view->setFrame(frame); m_view->setLive(!frame.isNull(), true);
+        m_streamStatus->setState(frame.isNull() ? QStringLiteral("Idle") : QStringLiteral("Live (DUMMY)"),
+            frame.isNull() ? StatusIndicatorWidget::State::Inactive : StatusIndicatorWidget::State::Active);
+    });
+    connect(m_dummy, &DummyDataProvider::detectionReceived, this, [this](const QString &id, const DetectionInfo &info) {
+        if (id == m_current.id) m_view->setDetection(info);
+    });
+    connect(m_dummy, &DummyDataProvider::trackingInfoReceived, this, [this](const QString &id, const TrackingInfo &info) {
+        if (id == m_current.id) m_tracking->updateTrackingInfo(info);
+    });
+    connect(m_dummy, &DummyDataProvider::eventListReceived, m_events, &EventSearchWidget::setEvents);
+    connect(m_dummy, &DummyDataProvider::recordingListReceived, m_playback, &PlaybackWidget::setRecordings);
+    connect(m_events, &EventSearchWidget::searchRequested, this, [this](const QString &id, const QDateTime &start, const QDateTime &end, const QString &type) {
+        if (m_dummy->isEnabled()) m_dummy->requestEvents(id, start, end, type);
+        else addLog(QStringLiteral("EVENT"), QStringLiteral("Event search is not supported by VMS"));
+    });
+    connect(m_playback, &PlaybackWidget::searchRequested, this, [this](const QString &id, const QDateTime &start, const QDateTime &end) {
+        if (m_dummy->isEnabled()) m_dummy->requestRecordings(id, start, end);
+        else {
+            const auto camera = std::find_if(m_cameras.cbegin(), m_cameras.cend(), [&id](const CameraInfo &item) { return item.id == id; });
+            if (camera == m_cameras.cend() || !camera->supportsRecordings) {
+                m_playback->setSearchError(QStringLiteral("Recording search is not supported for this camera")); return;
+            }
+            m_client->requestRecordings(id, start, end);
+        }
+    });
+    connect(m_events, &EventSearchWidget::eventPlaybackRequested, this, [this](const QString &id, const QDateTime &time) {
+        if (m_dummy->isEnabled()) m_dummy->requestRecordingAt(id, time);
+        else addLog(QStringLiteral("REC"), QStringLiteral("Recording lookup requires the VMS API"));
+    });
+    connect(m_dummy, &DummyDataProvider::recordingResolved, this, [this](const RecordingInfo &recording, const QDateTime &time) {
+        m_playback->openRecording(recording, time); m_tabs->setCurrentWidget(m_playback);
+        addLog(QStringLiteral("REC"), QStringLiteral("DUMMY timeline opened at %1").arg(time.toString(QStringLiteral("HH:mm:ss"))));
+    });
+    connect(m_ptz, &PTZControlWidget::moveRequested, m_ptzCommands, &PtzCommandController::setButtonMovement);
+    connect(m_ptz, &PTZControlWidget::stopRequested, this, [this] { m_ptzCommands->setButtonMovement(0, 0); });
+    connect(m_ptz, &PTZControlWidget::centerRequested, this, &MainWindow::requestCenter);
+    connect(m_keyboard, &PtzKeyboardController::moveRequested, m_ptzCommands, &PtzCommandController::setKeyboardMovement);
+    connect(m_keyboard, &PtzKeyboardController::stopRequested, this, [this] { m_ptzCommands->setKeyboardMovement(0, 0); });
+    connect(m_keyboard, &PtzKeyboardController::centerRequested, this, &MainWindow::requestCenter);
+    connect(m_keyboard, &PtzKeyboardController::inputCancelled, this, &MainWindow::requestStop);
+    connect(m_ptzCommands, &PtzCommandController::moveRequested, this, [this](const QString &id, float pan, float tilt) {
+        if (m_dummy->isEnabled()) m_dummy->movePtz(id, pan, tilt); else m_client->sendPtzMove(id, pan, tilt);
+    });
+    connect(m_ptzCommands, &PtzCommandController::stopRequested, this, [this](const QString &id) {
+        if (m_dummy->isEnabled()) m_dummy->stopPtz(id); else m_client->sendPtzStop(id);
+    });
+    connect(m_ptzCommands, &PtzCommandController::centerRequested, this, [this](const QString &id) {
+        if (m_dummy->isEnabled()) m_dummy->centerPtz(id); else m_client->sendPtzCenter(id);
+    });
+    connect(m_tracking, &TrackingPanel::trackingChanged, this, [this](bool enabled) {
+        if (m_dummy->isEnabled()) m_dummy->setTrackingEnabled(m_current.id, enabled);
+    });
+    connect(m_view, &CameraViewWidget::startRequested, this, [this](const QString &method) {
+        if (m_dummy->isEnabled() && m_current.online) {
+            m_dummy->requestCameraStatus(m_current.id); addLog(QStringLiteral("STREAM"), method + QStringLiteral(" dummy preview; no real stream"));
+        } else if (!m_dummy->isEnabled() && (method == QStringLiteral("RTSP TCP") || method == QStringLiteral("RTSP UDP"))) {
+            m_streamStatus->setState(QStringLiteral("Connecting (VMS)"), StatusIndicatorWidget::State::Inactive);
+            m_liveWanted = true; m_streamRequestPending = true; m_client->requestStream(m_current.id, m_view->selectedTransport());
+        } else addLog(QStringLiteral("STREAM"), QStringLiteral("Select RTSP TCP or RTSP UDP"));
+    });
+    connect(m_view, &CameraViewWidget::stopRequested, this, [this] {
+        m_liveWanted = false; m_streamRequestPending = false; m_client->cancelStreamRequest(); m_view->stopStream();
+        m_view->setLive(false); m_view->setFrame(QImage()); m_view->clearDetection();
+        m_streamStatus->setState(QStringLiteral("Stopped"), StatusIndicatorWidget::State::Inactive);
+        addLog(QStringLiteral("STREAM"), QStringLiteral("Preview stopped"));
+    });
+    connect(m_view, &CameraViewWidget::streamMethodChanged, this, [this](const QString &method) {
+        addLog(QStringLiteral("STREAM"), QStringLiteral("Selected %1").arg(method));
+    });
+    connect(m_device, &DeviceInfoWidget::refreshRequested, this, [this](const QString &id) {
+        if (m_dummy->isEnabled()) m_dummy->requestCameraStatus(id); else m_client->requestCameraStatus(id);
+    });
+    connect(m_device, &DeviceInfoWidget::discoverRequested, this, [this] {
+        if (m_dummy->isEnabled() || !m_client->isConnected()) {
+            m_device->setDiscoveryState(false, QStringLiteral("Connect to VMS first"));
+            addLog(QStringLiteral("ONVIF"), QStringLiteral("Connect to VMS first; no search request sent")); return;
+        }
+        m_device->setDiscoveryState(true, QStringLiteral("Searching cameras through VMS..."));
+        addLog(QStringLiteral("ONVIF"), QStringLiteral("Searching cameras through VMS..."));
+        m_discoveryRequestId = m_client->discoverCameras();
+        if (m_discoveryRequestId.isEmpty()) m_device->setDiscoveryState(false, QStringLiteral("Search request could not be sent"));
+    });
+    connect(m_device, &DeviceInfoWidget::listRequested, this, [this] {
+        if (m_dummy->isEnabled()) m_dummy->requestCameraList(); else m_client->requestCameraList();
+    });
+    connect(m_device, &DeviceInfoWidget::registerRequested, this, [this](const QString &url, const QString &username, const QString &password, const QString &profile) {
+        if (m_dummy->isEnabled() || !m_client->isConnected()) { addLog(QStringLiteral("ONVIF"), QStringLiteral("Connect to VMS first")); return; }
+        addLog(QStringLiteral("ONVIF"), QStringLiteral("Registering camera through VMS"));
+        m_client->registerCamera(url, username, password, profile);
+    });
+    connect(m_connection, &ConnectionStatusWidget::connectRequested, this, [this](const QString &host, quint16 port) {
+        requestStop();
+        m_dummyToggle->setChecked(false);
+        m_playback->setLocalVms(host.compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0 || QHostAddress(host).isLoopback());
+        m_client->connectToServer(host, port);
+    });
+    connect(m_connection, &ConnectionStatusWidget::disconnectRequested, this, [this] {
+        requestStop();
+        m_dummyToggle->setChecked(false); m_client->disconnectFromServer();
+    });
+    connect(m_dummyToggle, &QCheckBox::toggled, this, [this](bool enabled) {
+        m_device->setDiscoveryState(false, QStringLiteral("Connect to VMS first"));
+        m_events->setEnabled(enabled); m_tabs->setTabEnabled(0, enabled);
+        requestStop(); m_keyboard->setEnabled(false); m_playback->clear(); m_liveWanted = false; m_streamRequestPending = false; m_view->stopStream(); m_client->disconnectFromServer(); m_dummy->setEnabled(enabled);
+        m_playback->setSearchAvailable(enabled);
+    });
+    addLog(QStringLiteral("SYSTEM"), QStringLiteral("Mini VMS UI — WebSocket camera status API"));
+    m_dummyToggle->setChecked(dummyMode); if (!dummyMode) { m_dummy->setEnabled(false); applyCameraStatus(CameraInfo{}); }
 }
-
-QWidget *MainWindow::makePanel(const QString &title, QWidget *content)
-{
-    auto *panel = new QWidget(this);
-    panel->setObjectName(QStringLiteral("panel"));
-    auto *layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(14, 12, 14, 14);
-    layout->setSpacing(10);
-    auto *heading = new QLabel(title, panel);
-    heading->setObjectName(QStringLiteral("panelHeading"));
-    layout->addWidget(heading);
-    layout->addWidget(content, 1);
-    return panel;
+MainWindow::~MainWindow() {
+    // QWidget teardown can emit focus/window-deactivate signals after this derived
+    // destructor. Stop input and detach child-to-controller connections first.
+    requestStop(); m_ptzCommands->setTarget(QString(), false); m_keyboard->setEnabled(false);
+    m_view->stopStream(); m_client->disconnectFromServer();
+    for (auto *child : findChildren<QObject *>()) QObject::disconnect(child, nullptr, this, nullptr);
 }
-
-QWidget *MainWindow::makeInformationPanel()
-{
-    auto *content = new QWidget(this);
-    auto *grid = new QGridLayout(content);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setHorizontalSpacing(14);
-    grid->setVerticalSpacing(6);
-    const auto add = [&](int row, const QString &caption, QLabel *&value) {
-        auto *name = new QLabel(caption, content);
-        name->setObjectName(QStringLiteral("infoName"));
-        value = new QLabel(QStringLiteral("—"), content);
-        value->setObjectName(QStringLiteral("infoValue"));
-        value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        grid->addWidget(name, row, 0);
-        grid->addWidget(value, row, 1);
-    };
-    add(0, QStringLiteral("Object"), m_object);
-    add(1, QStringLiteral("Confidence"), m_confidence);
-    add(2, QStringLiteral("Object X"), m_x);
-    add(3, QStringLiteral("Object Y"), m_y);
-    add(4, QStringLiteral("Error X"), m_errorX);
-    add(5, QStringLiteral("Error Y"), m_errorY);
-    add(6, QStringLiteral("Pan"), m_pan);
-    add(7, QStringLiteral("Tilt"), m_tilt);
-    add(8, QStringLiteral("Frame size"), m_frameSize);
-    grid->setColumnStretch(0, 1);
-    return content;
+QWidget *MainWindow::makePanel(const QString &title, QWidget *content) {
+    auto *panel = new QWidget(this); panel->setObjectName(QStringLiteral("panel"));
+    auto *layout = new QVBoxLayout(panel); layout->setContentsMargins(10, 8, 10, 8);
+    auto *heading = new QLabel(title, panel); heading->setObjectName(QStringLiteral("panelHeading"));
+    layout->addWidget(heading); layout->addWidget(content, 1); return panel;
 }
-
-void MainWindow::updateTrackingInfo(const TrackingInfo &info)
-{
-    if (!info.detected) {
-        clearTrackingInfo();
-        return;
+// 선택 변경 시 이전 장치의 표시와 입력을 정리해 cameraId 간 정보가 섞이지 않게 한다.
+void MainWindow::selectCamera(const QString &id) {
+    const bool registered = !id.isEmpty() && id == m_registerSelection;
+    if (registered) m_registerSelection.clear();
+    m_liveWanted = registered; m_streamRequestPending = false;
+    m_client->cancelStreamRequest(); m_view->stopStream();
+    requestStop(); m_keyboard->stop(); m_current = CameraInfo{}; m_current.id = id;
+    m_view->setFrame(QImage()); m_view->clearDetection(); m_view->setLive(false);
+    m_streamStatus->setState(QStringLiteral("Idle"), StatusIndicatorWidget::State::Inactive);
+    m_tracking->updateTrackingInfo(TrackingInfo{}); m_events->setEvents({}); m_playback->clear(); m_playback->setRecordings({});
+    m_events->setSelectedCamera(id); m_playback->setSelectedCamera(id);
+    if (id.isEmpty()) applyCameraStatus(CameraInfo{});
+    else for (const auto &camera : m_cameras) if (camera.id == id) { applyCameraStatus(camera); break; }
+    if (!id.isEmpty()) {
+        if (m_dummy->isEnabled()) m_dummy->requestCameraStatus(id);
+        else {
+            m_client->requestCameraStatus(id);
+            if (registered && !m_streamRequestPending) { m_streamRequestPending = true; m_client->requestStream(id, m_view->selectedTransport()); }
+        }
     }
-    m_object->setText(info.label);
-    m_confidence->setText(QStringLiteral("%1 %").arg(qRound(info.confidence * 100.0F)));
-    m_x->setText(QString::number(info.objectX));
-    m_y->setText(QString::number(info.objectY));
-    m_errorX->setText(QStringLiteral("%1%2").arg(info.errorX >= 0 ? QStringLiteral("+") : QString()).arg(info.errorX));
-    m_errorY->setText(QStringLiteral("%1%2").arg(info.errorY >= 0 ? QStringLiteral("+") : QString()).arg(info.errorY));
-    m_pan->setText(QStringLiteral("%1 deg").arg(info.panAngle, 0, 'f', 0));
-    m_tilt->setText(QStringLiteral("%1 deg").arg(info.tiltAngle, 0, 'f', 0));
-    m_frameSize->setText(QStringLiteral("%1 x %2").arg(info.frameWidth).arg(info.frameHeight));
 }
-
-void MainWindow::clearTrackingInfo()
-{
-    m_camera->clearDetection();
-    for (QLabel *value : {m_object, m_confidence, m_x, m_y, m_errorX, m_errorY, m_pan, m_tilt})
-        value->setText(QStringLiteral("—"));
-    m_frameSize->setText(QStringLiteral("640 x 480"));
-}
-
-void MainWindow::addLog(const QString &message)
-{
-    m_log->appendPlainText(QStringLiteral("[%1] %2")
-                               .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")), message));
-    m_log->verticalScrollBar()->setValue(m_log->verticalScrollBar()->maximum());
-}
-
-void MainWindow::sendPtz(const QString &direction)
-{
-    if (!m_network->isConnected()) {
-        addLog(QStringLiteral("PTZ %1 not sent: connect to Raspberry Pi first").arg(direction));
-        return;
+void MainWindow::applyCameraStatus(const CameraInfo &camera) {
+    for (auto &stored : m_cameras) if (stored.id == camera.id) stored = camera;
+    m_list->updateCamera(camera); if (camera.id != m_current.id) return;
+    if (!m_dummy->isEnabled() && !camera.recordingError.isEmpty() && camera.recordingError != m_current.recordingError)
+        addLog(QStringLiteral("REC"), camera.recordingError);
+    m_current = camera; m_device->setCamera(camera);
+    m_view->setRecordingControls(!m_dummy->isEnabled() && m_client->isConnected() && camera.supportsRecordings && camera.online && !camera.recordingRequested,
+        !m_dummy->isEnabled() && m_client->isConnected() && camera.supportsRecordings && camera.recordingRequested);
+    m_view->setCameraName(camera.id.isEmpty() ? QStringLiteral("Select a camera") : camera.id + QStringLiteral(" / ") + camera.name);
+    m_view->setOnline(camera.online); m_view->setRecording(camera.recording);
+    m_cameraStatus->setName(camera.id.isEmpty() ? QStringLiteral("Camera") : camera.id);
+    m_cameraStatus->setState(camera.online ? QStringLiteral("Online") : camera.status,
+        camera.online ? StatusIndicatorWidget::State::Active : StatusIndicatorWidget::State::Inactive);
+    const QString recText = camera.recording ? (m_dummy->isEnabled() ? QStringLiteral("Active (DUMMY)") : QStringLiteral("Active"))
+        : camera.recordingState == QStringLiteral("STOPPED") || m_dummy->isEnabled() ? QStringLiteral("Inactive") : camera.recordingState;
+    m_recStatus->setState(recText, camera.recordingState == QStringLiteral("ERROR") && !m_dummy->isEnabled() ? StatusIndicatorWidget::State::Error
+        : camera.recording ? StatusIndicatorWidget::State::Active : StatusIndicatorWidget::State::Inactive);
+    if (!m_dummy->isEnabled()) {
+        const bool live = camera.online && m_view->isLive();
+        const QString streamText = live ? QStringLiteral("Live (VMS)") : camera.online
+            ? m_liveWanted ? QStringLiteral("Connecting (VMS)") : QStringLiteral("Idle") : camera.rtspStatus;
+        m_streamStatus->setState(streamText, live ? StatusIndicatorWidget::State::Active
+            : camera.status == QStringLiteral("ERROR") ? StatusIndicatorWidget::State::Error : StatusIndicatorWidget::State::Inactive);
+        if (!camera.online) m_view->stopStream();
+        else if (m_liveWanted && !m_streamRequestPending && !m_view->isPlaying()) {
+            m_streamRequestPending = true; m_client->requestStream(camera.id, m_view->selectedTransport());
+        }
     }
-    addLog(QStringLiteral("PTZ %1 command").arg(direction));
-    m_network->sendPtzCommand(direction);
-}
-
-bool MainWindow::eventFilter(QObject *watched, QEvent *event)
-{
-    Q_UNUSED(watched)
-    if (event->type() != QEvent::KeyPress || QApplication::activeWindow() != this)
-        return QMainWindow::eventFilter(watched, event);
-
-    QWidget *focus = QApplication::focusWidget();
-    if (qobject_cast<QLineEdit *>(focus) || qobject_cast<QSpinBox *>(focus)
-        || qobject_cast<QComboBox *>(focus))
-        return QMainWindow::eventFilter(watched, event);
-
-    auto *key = static_cast<QKeyEvent *>(event);
-    if (key->isAutoRepeat() || (key->modifiers() != Qt::NoModifier
-                                && key->modifiers() != Qt::ShiftModifier))
-        return QMainWindow::eventFilter(watched, event);
-
-    switch (key->key()) {
-    case Qt::Key_Left: sendPtz(QStringLiteral("LEFT")); return true;
-    case Qt::Key_Right: sendPtz(QStringLiteral("RIGHT")); return true;
-    case Qt::Key_Up: sendPtz(QStringLiteral("UP")); return true;
-    case Qt::Key_Down: sendPtz(QStringLiteral("DOWN")); return true;
-    case Qt::Key_R: sendPtz(QStringLiteral("CENTER")); return true;
-    default: return QMainWindow::eventFilter(watched, event);
+    const bool enabled = camera.online && (m_dummy->isEnabled() || (m_client->isConnected() && camera.supportsPtz));
+    if (!m_dummy->isEnabled()) {
+        TrackingInfo unavailable; unavailable.status = QStringLiteral("UNSUPPORTED"); m_tracking->updateTrackingInfo(unavailable);
     }
+    if (!enabled) requestStop();
+    m_ptzCommands->setTarget(camera.id, enabled);
+    m_ptz->setEnabled(enabled); m_ptz->setCenterEnabled(m_dummy->isEnabled() || camera.supportsPtzCenter);
+    m_ptz->setToolTip(enabled ? QStringLiteral("Hold to move via VMS; release to stop") : QStringLiteral("Register an online camera with VMS PTZ capability"));
+    m_ptzNotice->setText(camera.supportsPtz ? QStringLiteral("PTZ via VMS · Tracking unavailable") : QStringLiteral("PTZ requires VMS capability · Tracking unavailable"));
+    m_tracking->setEnabled(m_dummy->isEnabled() && camera.online); m_keyboard->setEnabled(enabled);
 }
-
-void MainWindow::setDemoStatus(bool enabled)
-{
-    if (m_demoStatus == enabled)
-        return;
-    m_demoStatus = enabled;
-    m_connection->setRaspberryPiConnected(enabled || m_network->isConnected());
-    m_connection->setCameraConnected(enabled || m_videoActive);
-    m_mode->setText(enabled ? QStringLiteral("DEMO STATUS / NO TCP")
-                            : (m_demoEnabled ? QStringLiteral("DEMO MODE")
-                                             : QStringLiteral("LIVE / NO VIDEO STREAM")));
-    addLog(enabled ? QStringLiteral("Demo device status CONNECTED (simulated)")
-                   : QStringLiteral("Demo device status DISCONNECTED"));
+void MainWindow::requestStop() {
+    const QSignalBlocker blocker(m_keyboard); m_keyboard->stop(); m_ptz->resetPressedState(); m_ptzCommands->cancel();
 }
-
-void MainWindow::showDemoDetection()
-{
-    QImage frame(640, 480, QImage::Format_RGB32);
-    frame.fill(QColor("#17232b"));
-    QPainter painter(&frame);
-    painter.setPen(QPen(QColor("#273b43"), 1));
-    for (int x = 0; x < frame.width(); x += 40)
-        painter.drawLine(x, 0, x, frame.height());
-    for (int y = 0; y < frame.height(); y += 40)
-        painter.drawLine(0, y, frame.width(), y);
-    painter.setPen(QColor("#78909b"));
-    QFont font = painter.font();
-    font.setPixelSize(16);
-    painter.setFont(font);
-    painter.drawText(QRect(18, 16, 220, 32), QStringLiteral("DEMO FRAME  /  640 x 480"));
-    painter.end();
-    m_camera->setDemoFrame(frame);
-    m_camera->setDetection(QRect(250, 120, 140, 260), QStringLiteral("Person"), 0.92F,
-                           QPoint(320, 250));
-
-    TrackingInfo info;
-    info.detected = true;
-    info.label = QStringLiteral("Person");
-    info.confidence = 0.92F;
-    info.objectX = 320;
-    info.objectY = 250;
-    info.errorX = 0;
-    info.errorY = 10;
-    info.panAngle = 90;
-    info.tiltAngle = 92;
-    updateTrackingInfo(info);
-    if (m_tracking->trackingEnabled())
-        m_tracking->setState(TrackingPanel::State::Tracking);
-    addLog(QStringLiteral("Demo: Person detected (320, 250)"));
+void MainWindow::requestCenter() {
+    if (!m_dummy->isEnabled() && !m_current.supportsPtzCenter) {
+        addLog(QStringLiteral("PTZ ERROR"), QStringLiteral("CENTER is unavailable for this camera")); return;
+    }
+    const QSignalBlocker blocker(m_keyboard); m_keyboard->stop(); m_ptz->resetPressedState(); m_ptzCommands->center();
 }
+void MainWindow::addLog(const QString &source, const QString &message) { m_log->addLog(source, message); }

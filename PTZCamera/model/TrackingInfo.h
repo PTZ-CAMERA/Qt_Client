@@ -1,9 +1,14 @@
 #pragma once
 
 #include <QString>
+#include <QMetaType>
 
 struct TrackingInfo
 {
+    // VMS가 전달할 추적 상태다. 기존 필드는 legacy 화면/프로토콜 호환을 위해 유지한다.
+    bool enabled = false;
+    QString target = QStringLiteral("Person");
+    QString status = QStringLiteral("IDLE");
     bool detected = false;
     QString label;
     float confidence = 0.0F;
@@ -16,3 +21,4 @@ struct TrackingInfo
     int frameWidth = 640;
     int frameHeight = 480;
 };
+Q_DECLARE_METATYPE(TrackingInfo)
