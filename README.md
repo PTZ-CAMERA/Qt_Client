@@ -17,7 +17,7 @@ flowchart LR
         AI --> Services
     end
     subgraph Server["Mini VMS Server · PC"]
-        VMS[CameraManager / ONVIF PTZ Router]
+        VMS[CameraService / ONVIF PTZ Router]
         REC[Recording / Recording Search]
         API[REST / WebSocket / RTSP Distribution]
         VMS --> API
@@ -37,6 +37,26 @@ flowchart LR
 ```
 
 Qt 기본 실행 파일은 Pi에 직접 접속하지 않습니다. 검색·등록·PTZ는 VMS API를 사용하고 라이브 영상은 VMS가 반환한 RTSP 주소로 재생합니다. WebRTC는 기본 Qt 클라이언트에서 사용하지 않습니다. 그림의 Pi AI·메타데이터 기능은 시스템 설계이며 실제 동작은 Pi와 서버 구현에 달려 있습니다.
+
+## 클라이언트 내부 구조
+
+```mermaid
+flowchart LR
+    Input["PTZ 버튼 / 방향키 / WASD"] --> PTZ["PtzCommandController · 200ms 갱신"]
+    PTZ --> Client["VmsClient · JSON / HTTP"]
+    Main["MainWindow · 선택 / signal-slot 연결"] <--> Client
+    Client <-->|"목록 / 상태 / PTZ / 녹화"| WS["VMS WebSocket"]
+    Client <-->|"RTSP 주소 / 준비 상태"| REST["VMS HTTP API"]
+    Main --> View["CameraViewWidget"]
+    RTSP["VMS RTSP TCP / UDP"] --> Player["QMediaPlayer"]
+    Player --> Sink["QVideoSink / QImage"]
+    Sink --> View
+    View --> Painter["CameraWidget · QPainter"]
+    Main <--> Playback["PlaybackWidget · 녹화 검색 / 로컬 재생"]
+    Dummy["DummyDataProvider"] --> Main
+```
+
+`MainWindow`는 화면 선택과 연결을 담당하고, 통신 파싱은 `VmsClient`, PTZ 입력 갱신은 `PtzCommandController`, 영상 디코딩은 Qt Multimedia가 담당합니다. 녹화 파일은 클라이언트에서 접근 가능한 로컬 파일로 재생합니다.
 
 ## 현재 기능
 
@@ -134,3 +154,13 @@ ctest --test-dir build-vms --output-on-failure
 기존 빌드 디렉터리의 Kit·Generator를 사용합니다. 테스트에는 Qt Test가 추가로 필요합니다. Linux Qt 환경에서 앱 빌드와 `MiniVmsUiTests`, `VmsWebSocketTests`가 통과했습니다. Windows/MSVC 실행 및 실제 Pi 서보 동작은 추가 확인이 필요합니다. 지연 시간은 측정 결과가 없어 수치로 보장하지 않습니다.
 
 [개발·진단 안내](PTZCamera/README.md) · [아키텍처 기록](docs/QT_VMS_CLIENT_ARCHITECTURE.md) · [세션 기록](docs/SESSION_2026-10-08.md) · [PTZ 기술 결정](PTZCamera/docs/tech-decisions/0011-vms-ptz-input.md)
+
+## 관련 프로젝트
+
+| 저장소 | 역할 |
+|---|---|
+| [PTZ_VMS_Server](https://github.com/PTZ-CAMERA/PTZ_VMS_Server) | 카메라 수신·RTSP 중계·등록·녹화·ONVIF PTZ |
+| [Qt_Client](https://github.com/PTZ-CAMERA/Qt_Client) | Qt 데스크톱 화면과 VMS 클라이언트 |
+| [PTZ_WEB_Client](https://github.com/PTZ-CAMERA/PTZ_WEB_Client) | WebRTC 영상·PTZ용 브라우저 화면 |
+
+웹 영상은 별도 WHEP 주소에 연결합니다. VMS의 WebRTC gateway는 아직 인터페이스 단계이고 웹의 PTZ 요청도 현재 서버 계약에 맞춘 수정이 필요합니다.
