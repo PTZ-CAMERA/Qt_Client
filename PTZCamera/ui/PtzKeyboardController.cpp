@@ -1,5 +1,6 @@
 // 방향키의 누름/놓음을 PTZ 신호로 변환한다. 앱 비활성화와 포커스 이탈 시에도 정지한다.
 #include "PtzKeyboardController.h"
+#include <QAbstractItemView>
 #include <QAbstractSpinBox>
 #include <QApplication>
 #include <QComboBox>
@@ -43,6 +44,8 @@ bool PtzKeyboardController::eventFilter(QObject *watched, QEvent *event) {
     if (event->type() == QEvent::KeyRelease && m_pressed.remove(key->key())) { updateMovement(); return true; }
     if (!m_enabled || QApplication::activeWindow() != m_window || event->type() != QEvent::KeyPress) return false;
     QWidget *focus = QApplication::focusWidget();
+    // 검색 결과의 방향키 탐색을 카메라 이동으로 해석하지 않는다.
+    if (qobject_cast<QAbstractItemView*>(focus) || (focus && qobject_cast<QAbstractItemView*>(focus->parentWidget()))) return false;
     if (qobject_cast<QLineEdit *>(focus) || qobject_cast<QAbstractSpinBox *>(focus) || qobject_cast<QComboBox *>(focus)
         || qobject_cast<QTextEdit *>(focus) || qobject_cast<QPlainTextEdit *>(focus)) return false;
     if (key->modifiers() != Qt::NoModifier && key->modifiers() != Qt::ShiftModifier) return false;

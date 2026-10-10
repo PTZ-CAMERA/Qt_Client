@@ -6,6 +6,11 @@
 #include "device/DeviceInfoWidget.h"
 #include "ui/ConnectionStatusWidget.h"
 #include "ui/PTZControlWidget.h"
+#include "ui/TrackingPanel.h"
+#include "camera/CameraWidget.h"
+#include "events/EventSearchWidget.h"
+#include "chat/ChatSearchWidget.h"
+#include "playback/PlaybackWidget.h"
 #include <QCheckBox>
 #include <QComboBox>
 #include <QPushButton>
@@ -25,6 +30,12 @@
 #include <QWebSocket>
 #include <QWebSocketServer>
 #include <QtTest>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QTableView>
+#include <QMediaPlayer>
+#include <QStandardPaths>
+#include <algorithm>
 namespace {
 QJsonObject camera(const QString &status = QStringLiteral("ONLINE")) {
     return {{"id", "CAM01"}, {"name", "Pi PTZ"}, {"status", status}, {"recording", false},
@@ -39,6 +50,22 @@ public:
     QList<QPointer<QWebSocket>> sockets;
     bool silent = false;
     bool ptz = false;
+    bool features = false;
+    bool tracking = false;
+    QList<QJsonObject> featureRequests;
+    QJsonObject featureCamera() const {
+        auto c=camera();
+        if (features) c["capabilities"]=QJsonObject{{"events",true},{"chatSearch",true},{"recordings",true},{"ptz",false},{"tracking",false}};
+        if (tracking) c["capabilities"]=QJsonObject{{"events",true},{"tracking",true},{"ptz",true},{"ptzCenter",true}};
+        return c;
+    }
+    QJsonObject row(bool event=false) const {
+        auto result=QJsonObject{{"id",1},{"sampleId",1},{"recordKind","detection_sample"},{"cameraId","CAM01"},{"type","DETECTION_SAMPLE"},
+            {"searchTimeMs",QDateTime::currentMSecsSinceEpoch()},{"sourceTimeMs",QDateTime::currentMSecsSinceEpoch()},
+            {"confidence",.92},{"panCommandAngle",QJsonValue::Null},{"tiltCommandAngle",QJsonValue::Null}};
+        if (event) { result.remove("sampleId"); result["recordKind"]="state_event"; result["type"]="PERSON_DETECTED"; result["confidence"]=QJsonValue::Null; }
+        return result;
+    }
     QList<QJsonObject> ptzRequests;
     MockVms() {
         if (!server.listen(QHostAddress::LocalHost, 0)) qFatal("Cannot start test WebSocket server");
@@ -49,14 +76,26 @@ public:
                 const auto request = QJsonDocument::fromJson(message.toUtf8()).object();
                 const auto command = request.value("command").toString();
                 QJsonObject reply{{"version", 1}, {"type", "response"}, {"requestId", request.value("requestId")}, {"ok", true}};
-                if (command == QStringLiteral("GET_CAMERA_LIST")) reply.insert("data", QJsonObject{{"cameras", QJsonArray{camera()}}});
-                else if (command == QStringLiteral("GET_CAMERA_STATUS")) reply.insert("data", QJsonObject{{"camera", camera()}});
+                if (command == QStringLiteral("GET_CAMERA_LIST")) reply.insert("data", QJsonObject{{"cameras", QJsonArray{featureCamera()}}});
+                else if (command == QStringLiteral("GET_CAMERA_STATUS")) reply.insert("data", QJsonObject{{"camera", featureCamera()}});
+                else if (features && (command==QStringLiteral("GET_EVENTS") || command==QStringLiteral("GET_DETECTIONS"))) {
+                    featureRequests.append(request);
+                    reply["data"]=QJsonObject{{command==QStringLiteral("GET_EVENTS") ? "events" : "detections",QJsonArray{row(command==QStringLiteral("GET_EVENTS"))}},{"nextCursor",QJsonObject{{"id",1},{"timeMs",QDateTime::currentMSecsSinceEpoch()}}}};
+                }
+                else if (features && command==QStringLiteral("GET_EVENT_PLAYBACK")) {
+                    featureRequests.append(request); reply["data"]=QJsonObject{{"cameraId","CAM01"},{"playable",false},{"reason","NO_RECORDING_AT_TIME"}};
+                }
+                else if (features && command==QStringLiteral("CHAT_SEARCH")) {
+                    featureRequests.append(request); auto record=row(); record["playback"]=QJsonObject{{"playable",false},{"reason","NO_RECORDING_AT_TIME"}};
+                    reply["data"]=QJsonObject{{"action","search"},{"answer","조건에 맞는 기록 1개. 녹화는 없습니다."},{"results",QJsonArray{record}},{"nextCursor",QJsonValue::Null}};
+                    QTimer::singleShot(150,socket,[socket,reply]{socket->sendTextMessage(text(reply));}); return;
+                }
                 else if (command == QStringLiteral("DISCOVER_CAMERAS")) {
                     reply.insert("data", QJsonObject{{"devices", QJsonArray{QJsonObject{{"name", "Test camera"}, {"address", "127.0.0.1"},
                         {"deviceServiceUrl", "http://127.0.0.1/onvif/device_service"}, {"source", "ws-discovery"}}}}});
                     QTimer::singleShot(150, socket, [socket, reply] { socket->sendTextMessage(text(reply)); }); return;
                 }
-                else if (ptz && command.startsWith(QStringLiteral("PTZ_"))) {
+                else if ((ptz && command.startsWith(QStringLiteral("PTZ_"))) || (tracking && command.startsWith(QStringLiteral("TRACKING_")))) {
                     ptzRequests.append(request);
                     reply.insert("data", QJsonObject{{"cameraId", request.value("cameraId")}, {"command", command}, {"phase", "ACCEPTED"}, {"motorArrivalConfirmed", false}});
                 }
@@ -71,6 +110,92 @@ public:
         for (auto socket : sockets) if (socket) socket->sendTextMessage(notification);
     }
 };
+}
+void VmsWebSocketTests::trackingUsesConfirmedMetadataAndSurvivesIdleFocusChanges() {
+    MockVms server; server.tracking=true; server.ptz=true;
+    MainWindow window(nullptr,false); window.show();
+    auto *client=window.findChild<VmsClient*>();
+    emit window.findChild<ConnectionStatusWidget*>()->connectRequested(QStringLiteral("127.0.0.1"),server.server.serverPort());
+    QTRY_VERIFY(client->isConnected()); QTRY_COMPARE(window.findChild<CameraListWidget*>()->selectedCameraId(),QStringLiteral("CAM01"));
+    auto *toggle=window.findChild<QPushButton*>(QStringLiteral("trackingToggle"));
+    auto *state=window.findChild<QLabel*>(QStringLiteral("trackingCommandStatus"));
+    const auto metadata=[&](bool enabled){server.sockets.first()->sendTextMessage(text({{"version",1},{"type","notification"},{"event","CAMERA_METADATA"},{"cameraId","CAM01"},{"data",QJsonObject{{"cameraId","CAM01"},{"topic","Tracking/State"},{"tracking",enabled},{"receivedTimeMs",QDateTime::currentMSecsSinceEpoch()}}}}));};
+    const auto result=[&](const QJsonObject &request,bool ok){
+        server.sockets.first()->sendTextMessage(text({{"version",1},{"type","notification"},{"event","PTZ_RESULT"},{"requestId",request.value("requestId")},{"ok",ok},
+            {"data",QJsonObject{{"cameraId","CAM01"},{"command",request.value("command")},{"phase",ok ? "PI_ACKNOWLEDGED" : "FAILED"}}},
+            {"error",QJsonObject{{"code","ONVIF_FAULT"},{"message","fixture fault"}}}}));
+    };
+    metadata(false); QTRY_COMPARE(toggle->text(),QStringLiteral("OFF")); QTRY_VERIFY(toggle->isEnabled());
+    QTest::mouseClick(toggle,Qt::LeftButton); QTRY_COMPARE(server.ptzRequests.size(),1);
+    QCOMPARE(server.ptzRequests.last().value("command").toString(),QStringLiteral("TRACKING_ON"));
+    QVERIFY(!toggle->isChecked()); QVERIFY(!toggle->isEnabled());
+    result(server.ptzRequests.last(),true); QTRY_VERIFY(state->text().contains(QStringLiteral("상태 알림 대기"))); QVERIFY(!toggle->isChecked());
+    metadata(true); QTRY_VERIFY(toggle->isChecked()); QTRY_VERIFY(toggle->isEnabled());
+    const int confirmed=server.ptzRequests.size();
+    auto *query=window.findChild<QLineEdit*>(QStringLiteral("onvifService")); query->setFocus();
+    QTest::qWait(250); QCOMPARE(server.ptzRequests.size(),confirmed);
+    QTest::mouseClick(toggle,Qt::LeftButton); QTRY_COMPARE(server.ptzRequests.size(),confirmed+1);
+    QCOMPARE(server.ptzRequests.last().value("command").toString(),QStringLiteral("TRACKING_OFF"));
+    QVERIFY(toggle->isChecked()); result(server.ptzRequests.last(),false);
+    QTRY_VERIFY(state->text().contains(QStringLiteral("실패"))); QVERIFY(toggle->isChecked()); QTRY_VERIFY(toggle->isEnabled());
+    metadata(false); QTRY_VERIFY(!toggle->isChecked()); QCOMPARE(server.ptzRequests.size(),confirmed+1);
+    server.sockets.first()->close(); QTRY_VERIFY(!client->isConnected()); QTRY_VERIFY(!toggle->isEnabled());
+}
+void VmsWebSocketTests::metadataSearchChatAndScopeIsolation() {
+    MockVms server; server.features=true; MainWindow window(nullptr,false); window.show();
+    auto *client=window.findChild<VmsClient*>(); auto *connection=window.findChild<ConnectionStatusWidget*>();
+    emit connection->connectRequested(QStringLiteral("127.0.0.1"),server.server.serverPort());
+    QTRY_VERIFY(client->isConnected()); QTRY_COMPARE(window.findChild<CameraListWidget*>()->selectedCameraId(),QStringLiteral("CAM01"));
+    auto *canvas=window.findChild<CameraViewWidget*>()->findChild<CameraWidget*>();
+    QImage frame(1280,720,QImage::Format_RGB32); frame.fill(Qt::black); window.findChild<CameraViewWidget*>()->setFrame(frame);
+    QSignalSpy metadata(client,&VmsClient::metadataReceived);
+    const auto notify=[&](const QString &id,const QJsonObject &data){server.sockets.first()->sendTextMessage(text({{"version",1},{"type","notification"},{"event","CAMERA_METADATA"},{"cameraId",id},{"data",data}}));};
+    QJsonObject detection{{"cameraId","CAM01"},{"topic","Analytics/PersonDetection"},{"sourceTimeMs",1000},{"detected",true},{"available",true},
+        {"confidence",.92},{"bboxX",250},{"bboxY",120},{"bboxWidth",140},{"bboxHeight",260},{"imageWidth",1280},{"imageHeight",720},{"frameId","9007199254740993"}};
+    notify(QStringLiteral("CAM01"),detection); QTRY_VERIFY(canvas->hasDetection());
+    QCOMPARE(canvas->detection().boundingBox,QRect(250,120,140,260)); QCOMPARE(canvas->detection().imageSize,QSize(1280,720));
+    QCOMPARE(metadata.last()[1].toJsonObject().value("frameId").toString(),QStringLiteral("9007199254740993"));
+    notify(QStringLiteral("CAM01"),{{"cameraId","CAM01"},{"topic","Tracking/State"},{"sourceTimeMs",1100},{"tracking",true},{"targetState","TRACKING"},{"confidence",QJsonValue::Null},{"bboxX",QJsonValue::Null}});
+    QTRY_COMPARE(metadata.count(),2); QVERIFY(canvas->hasDetection());
+    QCOMPARE(window.findChild<TrackingPanel*>()->findChild<QPushButton*>(QStringLiteral("trackingToggle"))->isEnabled(),false);
+    auto other=detection; other["cameraId"]="CAM99"; other["detected"]=false;
+    notify(QStringLiteral("CAM99"),other); QTRY_COMPARE(metadata.count(),3); QVERIFY(canvas->hasDetection());
+    detection["sourceTimeMs"]=1200; detection["confidence"]=QJsonValue::Null;
+    notify(QStringLiteral("CAM01"),detection); QTRY_COMPARE(metadata.count(),4); QVERIFY(!canvas->detection().hasConfidence);
+    QTRY_VERIFY_WITH_TIMEOUT(!canvas->hasDetection(),2500);
+    detection["sourceTimeMs"]=1300; detection["detected"]=false;
+    notify(QStringLiteral("CAM01"),detection); QTRY_VERIFY(!canvas->hasDetection());
+
+    auto *events=window.findChild<EventSearchWidget*>(); auto *table=events->findChild<QTableView*>();
+    events->findChild<QSpinBox*>(QStringLiteral("eventMinConfidence"))->setValue(90);
+    events->findChild<QPushButton*>(QStringLiteral("eventSearchButton"))->click(); QTRY_COMPARE(table->model()->rowCount(),1);
+    QCOMPARE(server.featureRequests.last().value("command").toString(),QStringLiteral("GET_DETECTIONS"));
+    QCOMPARE(server.featureRequests.last().value("minConfidence").toDouble(),.9);
+    QCOMPARE(table->model()->index(0,3).data().toString(),QStringLiteral("92%"));
+    events->findChild<QPushButton*>(QStringLiteral("eventNextPage"))->click();
+    QTRY_VERIFY(server.featureRequests.last().value("cursor").isObject());
+    events->findChild<QComboBox*>(QStringLiteral("eventRecordKind"))->setCurrentIndex(1);
+    events->findChild<QSpinBox*>(QStringLiteral("eventMinConfidence"))->setValue(0);
+    events->findChild<QPushButton*>(QStringLiteral("eventSearchButton"))->click(); QTRY_COMPARE(table->model()->rowCount(),1);
+    QCOMPARE(server.featureRequests.last().value("command").toString(),QStringLiteral("GET_EVENTS"));
+    QCOMPARE(table->model()->index(0,3).data().toString(),QStringLiteral("—"));
+    emit events->recordPlaybackRequested(server.row());
+    QTRY_COMPARE(server.featureRequests.last().value("command").toString(),QStringLiteral("GET_EVENT_PLAYBACK"));
+    QCOMPARE(server.featureRequests.last().value("sampleId").toInt(),1);
+    QTRY_COMPARE(window.findChild<QTabWidget*>()->currentWidget(),static_cast<QWidget*>(window.findChild<PlaybackWidget*>()));
+    QVERIFY(window.findChild<PlaybackWidget*>()->findChild<QMediaPlayer*>()==nullptr);
+
+    auto *chat=window.findChild<ChatSearchWidget*>(); auto *input=chat->findChild<QLineEdit*>(QStringLiteral("chatInput"));
+    auto *send=chat->findChild<QPushButton*>(QStringLiteral("chatSend"));
+    QVERIFY(send->isEnabled()); input->setText(QStringLiteral("오늘 사람이 나온 영상 찾아줘")); send->click(); QVERIFY(!send->isEnabled());
+    QTRY_COMPARE(chat->findChild<QTableView*>(QStringLiteral("chatResults"))->model()->rowCount(),1); QVERIFY(send->isEnabled());
+    QCOMPARE(server.featureRequests.last().value("command").toString(),QStringLiteral("CHAT_SEARCH"));
+    QCOMPARE(server.featureRequests.last().value("timezone").toString(),QStringLiteral("Asia/Seoul"));
+    auto *chatTable=chat->findChild<QTableView*>(QStringLiteral("chatResults")); chatTable->selectRow(0);
+    QVERIFY(!chat->findChild<QPushButton*>(QStringLiteral("chatPlay"))->isEnabled());
+    QVERIFY(chat->findChild<QPlainTextEdit*>(QStringLiteral("chatHistory"))->toPlainText().contains(QStringLiteral("녹화는 없습니다")));
+    client->disconnectFromServer(); QTRY_VERIFY(!send->isEnabled()); QCOMPARE(chatTable->model()->rowCount(),0);
+    QVERIFY(!canvas->hasDetection());
 }
 void VmsWebSocketTests::dummyConnectAndDiscoveryButtons() {
     MockVms server; MainWindow window; window.show();
@@ -207,6 +332,50 @@ void VmsWebSocketTests::realVmsServer() {
     auto *list = window.findChild<CameraListWidget *>();
     emit connection->connectRequested(QStringLiteral("127.0.0.1"), port);
     QTRY_VERIFY(client->isConnected()); QTRY_COMPARE(list->selectedCameraId(), QStringLiteral("CAM01"));
+    if (liveConfig.isEmpty()) {
+        QSignalSpy direct(client, &VmsClient::streamUriReady);
+        client->requestStream(QStringLiteral("CAM01"), QStringLiteral("tcp"));
+        QTRY_COMPARE(direct.count(), 1);
+        QCOMPARE(direct.last()[1].toUrl().port(), 9);
+        client->requestStream(QStringLiteral("CAM01"), QStringLiteral("udp"));
+        QTRY_COMPARE(direct.count(), 2);
+        QCOMPARE(direct.last()[1].toUrl(), direct.first()[1].toUrl());
+        QSignalSpy metadata(client,&VmsClient::metadataSearchReceived), playback(client,&VmsClient::eventPlaybackReceived), failures(client,&VmsClient::requestFailed);
+        const auto from=QDateTime::currentDateTime().addSecs(-60), to=QDateTime::currentDateTime();
+        QVERIFY(!client->searchMetadata(QStringLiteral("CAM01"),from,to,true,QStringLiteral("ALL"),0.9).isEmpty());
+        QTRY_COMPARE(metadata.count(),1); QVERIFY(metadata.last()[2].toJsonArray().isEmpty());
+        QVERIFY(!client->searchMetadata(QStringLiteral("CAM01"),from,to,false,QStringLiteral("PERSON_DETECTED"),0).isEmpty());
+        QTRY_COMPARE(metadata.count(),2); QVERIFY(metadata.last()[2].toJsonArray().isEmpty());
+        const auto python=QStandardPaths::findExecutable(QStringLiteral("python3")), ffmpeg=QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+        if (!python.isEmpty() && !ffmpeg.isEmpty()) {
+            // 실제 VMS의 DB/검색/녹화 조회 계약을 합성 파일로 검사한다. Pi/LLM을 호출하지 않는다.
+            const auto file=directory.filePath(QStringLiteral("search-fixture.mkv"));
+            QProcess generator; generator.start(ffmpeg,{"-v","error","-f","lavfi","-i","testsrc2=size=160x120:rate=10","-t","4","-c:v","libx264","-pix_fmt","yuv420p","-y",file});
+            QVERIFY(generator.waitForFinished(10000)); QCOMPARE(generator.exitCode(),0);
+            const auto start=QDateTime::currentMSecsSinceEpoch()-4000;
+            const auto seed=QStringLiteral(R"PY(
+import json,sqlite3,sys
+db=sqlite3.connect(sys.argv[1]); start=int(sys.argv[3]); stamp=start+1234
+m={'cameraId':'CAM01','sourceTimeMs':stamp,'receivedTimeMs':stamp,'confidence':0.95,'frameId':'9007199254740993'}
+db.execute('INSERT INTO recordings(camera_id,start_time,end_time,file_path,duration,codec,width,height) VALUES(?,?,?,?,?,?,?,?)',('CAM01',start,start+4000,sys.argv[2],4,'H264',160,120))
+s=db.execute('INSERT INTO metadata_samples(camera_id,source_time_ms,received_time_ms,payload_json) VALUES(?,?,?,?)',('CAM01',stamp,stamp,json.dumps(m)))
+db.execute('INSERT INTO detection_index VALUES(?,?,?,?)',(s.lastrowid,'CAM01',stamp,0.95)); db.commit()
+)PY");
+            QProcess seeder; seeder.start(python,{QStringLiteral("-c"),seed,directory.filePath(QStringLiteral("vms.db")),file,QString::number(start)});
+            QVERIFY(seeder.waitForFinished(5000)); QCOMPARE(seeder.exitCode(),0);
+            QVERIFY(!client->searchMetadata(QStringLiteral("CAM01"),QDateTime::currentDateTime().addSecs(-60),QDateTime::currentDateTime(),true,QStringLiteral("ALL"),0.9).isEmpty());
+            QTRY_COMPARE(metadata.count(),3); const auto records=metadata.last()[2].toJsonArray(); QCOMPARE(records.size(),1);
+            const auto row=records[0].toObject(); QCOMPARE(row.value("frameId").toString(),QStringLiteral("9007199254740993"));
+            QVERIFY(!client->requestEventPlayback(row).isEmpty()); QTRY_COMPARE(playback.count(),1);
+            const auto location=playback.last()[1].toJsonObject(); QVERIFY(location.value("playable").toBool()); QCOMPARE(location.value("offsetMs").toInteger(),qint64(1234));
+            QCOMPARE(location.value("recording").toObject().value("filePath").toString(),file);
+            qInfo()<<"Real VMS detection sample -> recording lookup -> offsetMs=1234 verified";
+        }
+        QVERIFY(!client->requestEventPlayback({{"id",123},{"sampleId",123},{"recordKind","detection_sample"},{"cameraId","CAM01"}}).isEmpty());
+        QTRY_VERIFY(!playback.isEmpty() && !playback.last()[1].toJsonObject().value(QStringLiteral("playable")).toBool());
+        const auto chatId=client->chatSearch(QStringLiteral("CAM01"),QStringLiteral("오늘 사람 탐지 기록 찾아줘")); QVERIFY(!chatId.isEmpty());
+        QTRY_VERIFY(std::any_of(failures.begin(),failures.end(),[&](const QList<QVariant>& row){return row[0].toString()==chatId && row[1].toString()==QStringLiteral("CHAT_DISABLED");}));
+    }
     if (!liveConfig.isEmpty()) {
         window.show(); window.findChild<QTabWidget *>()->setCurrentIndex(2);
         auto *device = window.findChild<DeviceInfoWidget *>();
@@ -221,20 +390,20 @@ void VmsWebSocketTests::realVmsServer() {
         QTRY_VERIFY_WITH_TIMEOUT(registration.count() > 0, 25000);
         QTRY_VERIFY_WITH_TIMEOUT(streamUri.count() > 0, 25000);
         const auto uri = streamUri.last()[1].toUrl();
-        QCOMPARE(uri.host(), QStringLiteral("127.0.0.1")); QVERIFY(uri.userInfo().isEmpty()); QVERIFY(uri.port() != 8554);
+        QCOMPARE(uri.host(), QStringLiteral("192.168.0.92")); QCOMPARE(uri.port(), 8554);
         QTRY_VERIFY_WITH_TIMEOUT(frames.count() >= 3, 25000);
         QVERIFY(view->isLive());
         const int uriCount = streamUri.count();
         view->findChild<QComboBox *>(QStringLiteral("rtspTransport"))->setCurrentIndex(1);
         emit view->startRequested(QStringLiteral("RTSP UDP"));
         QTRY_VERIFY_WITH_TIMEOUT(streamUri.count() > uriCount, 15000);
-        QVERIFY(streamUri.last()[1].toUrl().query().contains(QStringLiteral("transport=udp")));
+        QCOMPARE(streamUri.last()[1].toUrl().host(), uri.host());
         frames.clear(); QTRY_VERIFY_WITH_TIMEOUT(frames.count() >= 3, 15000);
         QVERIFY(view->isLive());
         qInfo() << "Qt UDP live frames:" << frames.count() << frames.last()[0].toSize();
         const auto preview = qEnvironmentVariable("VMS_PREVIEW_PATH");
         if (!preview.isEmpty()) QVERIFY(window.grab().save(preview));
-        qInfo() << "ONVIF registration -> managed RTSP -> Qt decoded frames:" << frames.count() << frames.last()[0].toSize();
+        qInfo() << "ONVIF registration -> camera-direct RTSP -> Qt decoded frames:" << frames.count() << frames.last()[0].toSize();
         connect(client, &VmsClient::cameraStatusChanged, this, [&](const CameraInfo &value) { status = value; });
         client->requestCameraStatus(QStringLiteral("CAM01"));
         QTRY_VERIFY_WITH_TIMEOUT(status.online && status.packets > 0, 15000);

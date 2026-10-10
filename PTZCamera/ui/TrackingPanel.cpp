@@ -9,6 +9,7 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
+#include <cmath>
 
 // 토글 버튼과 대상/상태 행을 구성한다. 현재 선택 가능한 대상은 Person 하나다.
 TrackingPanel::TrackingPanel(QWidget *parent) : QWidget(parent)
@@ -54,9 +55,13 @@ TrackingPanel::TrackingPanel(QWidget *parent) : QWidget(parent)
     addValue(QStringLiteral("Confidence"), m_confidence);
     addValue(QStringLiteral("Error X"), m_errorX);
     addValue(QStringLiteral("Error Y"), m_errorY);
-    addValue(QStringLiteral("Pan"), m_pan);
-    addValue(QStringLiteral("Tilt"), m_tilt);
+    addValue(QStringLiteral("Pan command"), m_pan);
+    addValue(QStringLiteral("Tilt command"), m_tilt);
     layout->addWidget(m_details);
+    m_commandStatus = new QLabel(this); m_commandStatus->setObjectName(QStringLiteral("trackingCommandStatus"));
+    m_commandStatus->setWordWrap(true); layout->addWidget(m_commandStatus);
+    m_confirmation.setSingleShot(true); m_confirmation.setInterval(20000);
+    connect(&m_confirmation,&QTimer::timeout,this,[this]{ cancelCommand(QStringLiteral("추적 상태 확인 시간 초과 · 실제 상태 미확인")); });
     // legacy 화면에서는 기존 Object Information 패널을 사용하므로 추가 상세 행을 숨긴다.
     m_details->hide();
     setState(State::Idle);
@@ -69,6 +74,43 @@ TrackingPanel::TrackingPanel(QWidget *parent) : QWidget(parent)
         setState(State::Idle);
         emit trackingChanged(enabled);
     });
+}
+void TrackingPanel::setControlAvailable(bool available) {
+    m_available=available;
+    if (!available && m_waiting) cancelCommand(QStringLiteral("추적 제어 연결을 확인하세요."));
+    m_toggle->setEnabled(available && !m_waiting); m_target->setEnabled(available && !m_waiting);
+}
+void TrackingPanel::beginCommand(bool enabled) {
+    m_desired=enabled; m_waiting=true; m_confirmation.start();
+    m_commandStatus->setText(enabled ? QStringLiteral("추적 ON 요청 · VMS/Pi 응답 대기") : QStringLiteral("추적 OFF 요청 · VMS/Pi 응답 대기"));
+    setControlAvailable(m_available);
+}
+void TrackingPanel::commandPhase(const QString &phase) {
+    if (!m_waiting) return;
+    if (phase==QStringLiteral("ACCEPTED")) m_commandStatus->setText(QStringLiteral("VMS 접수 · Pi 응답 대기"));
+    else if (phase==QStringLiteral("PI_ACKNOWLEDGED")) m_commandStatus->setText(QStringLiteral("Pi ONVIF 응답 확인 · 실제 추적 상태 알림 대기"));
+    else cancelCommand(QStringLiteral("추적 명령 실패/취소 · 확인된 상태 유지"));
+}
+void TrackingPanel::cancelCommand(const QString &reason) {
+    m_waiting=false; m_confirmation.stop(); m_commandStatus->setText(reason);
+    m_toggle->setEnabled(m_available); m_target->setEnabled(m_available);
+}
+void TrackingPanel::updateMetadata(const QJsonObject &data) {
+    m_details->show(); const QSignalBlocker blocker(m_toggle);
+    const auto enabled=data.value(QStringLiteral("tracking"));
+    m_toggle->setText(enabled.isBool() ? enabled.toBool() ? QStringLiteral("ON") : QStringLiteral("OFF") : QStringLiteral("—"));
+    m_enabled=enabled.isBool() && enabled.toBool(); m_toggle->setChecked(m_enabled);
+    m_state->setText(data.value(QStringLiteral("targetState")).toString(enabled.isBool() ? m_enabled ? QStringLiteral("ENABLED") : QStringLiteral("IDLE") : QStringLiteral("UNKNOWN")));
+    if (m_waiting && enabled.isBool() && m_enabled==m_desired) cancelCommand(QStringLiteral("Pi 메타데이터로 추적 %1 확인").arg(m_enabled ? QStringLiteral("ON") : QStringLiteral("OFF")));
+    const auto number=[&](const char *key,const QString &suffix) {
+        const auto value=data.value(QString::fromLatin1(key));
+        return value.isDouble() && std::isfinite(value.toDouble()) ? QString::number(value.toDouble(),'f',0)+suffix : QStringLiteral("—");
+    };
+    const auto confidence=data.value(QStringLiteral("confidence"));
+    m_confidence->setText(confidence.isDouble() && data.value(QStringLiteral("detected")).toBool() ? QString::number(confidence.toDouble()*100,'f',0)+QStringLiteral("%") : QStringLiteral("—"));
+    m_errorX->setText(number("errorX",{})); m_errorY->setText(number("errorY",{}));
+    m_pan->setText(number("panCommandAngle",QStringLiteral("°"))); m_tilt->setText(number("tiltCommandAngle",QStringLiteral("°")));
+    setToolTip(QStringLiteral("ONVIF metadata · angles are commanded values · overlay is not frame-synchronized"));
 }
 
 // 외부 코드에서도 버튼을 클릭했을 때와 같은 상태 변경 경로를 사용하도록 한다.

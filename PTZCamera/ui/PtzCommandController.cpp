@@ -33,7 +33,8 @@ void PtzCommandController::updateMovement() {
     }
 }
 void PtzCommandController::cancel() {
-    const bool stop = m_enabled && !m_cameraId.isEmpty();
+    // 수동 입력이 없을 때 focus 변경만으로 Pi 자동 추적에 Stop을 보내지 않는다.
+    const bool stop = m_enabled && !m_cameraId.isEmpty() && m_refresh.isActive();
     m_refresh.stop(); m_buttonPan = m_buttonTilt = m_keyPan = m_keyTilt = m_pan = m_tilt = 0;
     if (stop) emit stopRequested(m_cameraId);
 }

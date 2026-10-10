@@ -29,6 +29,10 @@ bool parseCamera(const QJsonObject &object, CameraInfo &camera) {
     camera.supportsRecordings = object.value(QStringLiteral("capabilities")).toObject().value(QStringLiteral("recordings")).toBool();
     camera.supportsPtz = object.value(QStringLiteral("capabilities")).toObject().value(QStringLiteral("ptz")).toBool();
     camera.supportsPtzCenter = object.value(QStringLiteral("capabilities")).toObject().value(QStringLiteral("ptzCenter")).toBool();
+    camera.supportsEvents = object.value(QStringLiteral("capabilities")).toObject().value(QStringLiteral("events")).toBool();
+    camera.supportsChatSearch = object.value(QStringLiteral("capabilities")).toObject().value(QStringLiteral("chatSearch")).toBool();
+    camera.supportsTracking = object.value(QStringLiteral("capabilities")).toObject().value(QStringLiteral("tracking")).toBool();
+    camera.eventsStatus = object.value(QStringLiteral("eventsStatus")).toString(QStringLiteral("DISABLED"));
     camera.recordingRequested = object.value(QStringLiteral("recordingRequested")).toBool();
     camera.recordingState = object.value(QStringLiteral("recordingState")).toString(QStringLiteral("STOPPED"));
     camera.recordingError = object.value(QStringLiteral("recordingError")).toString();
@@ -138,8 +142,9 @@ void VmsClient::disconnectFromServer() {
 void VmsClient::clearPending(const QString &code, const QString &reason) {
     for (const auto &pending : m_ptzResults)
         emit message(QStringLiteral("PTZ ERROR"), QStringLiteral("%1 %2: %3; Pi response unconfirmed").arg(pending.cameraId, pending.command, reason));
-    m_ptzResults.clear(); m_queuedMoves.clear(); m_deferredCenter.clear();
+    m_ptzResults.clear(); m_queuedMoves.clear(); m_deferredCenter.clear(); m_deferredTracking.clear(); m_trackingOwners.clear();
     cancelRecordingSearch();
+    cancelInteractiveRequests();
     const auto ids = m_pending.keys(); m_pending.clear();
     for (const auto &id : ids) emit requestFailed(id, code, reason);
 }
@@ -152,12 +157,36 @@ QString VmsClient::sendRequest(const QString &command, const QString &cameraId, 
     const auto id = QString::number(++m_nextRequest);
     object.insert(QStringLiteral("version"), 1); object.insert(QStringLiteral("requestId"), id); object.insert(QStringLiteral("command"), command);
     if (!cameraId.isEmpty()) object.insert(QStringLiteral("cameraId"), cameraId);
-    const int timeout = command == QStringLiteral("REGISTER_CAMERA") ? 25000 : command == QStringLiteral("DISCOVER_CAMERAS") ? 10000 : (command == QStringLiteral("START_RECORDING") || command == QStringLiteral("STOP_RECORDING") || command == QStringLiteral("GET_RECORDINGS")) ? 15000 : 5000;
+    const bool search = command == QStringLiteral("GET_EVENTS") || command == QStringLiteral("GET_DETECTIONS") || command == QStringLiteral("GET_EVENT_PLAYBACK");
+    const int timeout = command == QStringLiteral("CHAT_SEARCH") ? 45000 : command == QStringLiteral("REGISTER_CAMERA") ? 25000 : command == QStringLiteral("DISCOVER_CAMERAS") ? 10000 : (command == QStringLiteral("START_RECORDING") || command == QStringLiteral("STOP_RECORDING") || command == QStringLiteral("GET_RECORDINGS") || search) ? 15000 : 5000;
     m_pending.insert(id, {command, cameraId, m_clock.elapsed() + timeout});
     m_socket->sendTextMessage(QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact)));
     return id;
 }
 void VmsClient::requestCameraList() { request(QStringLiteral("GET_CAMERA_LIST")); }
+void VmsClient::cancelInteractiveRequests() { m_latestMetadataQuery.clear(); m_latestPlaybackQuery.clear(); m_latestChatQuery.clear(); }
+QString VmsClient::searchMetadata(const QString &id,const QDateTime &from,const QDateTime &to,bool detections,const QString &type,double minimum,const QJsonValue &cursor) {
+    if (id.isEmpty() || !from.isValid() || !to.isValid() || from>to || !std::isfinite(minimum) || minimum<0 || minimum>1) return {};
+    QJsonObject fields{{"fromMs",from.toMSecsSinceEpoch()},{"toMs",to.toMSecsSinceEpoch()+1},{"limit",50}};
+    if (minimum>0) fields.insert(QStringLiteral("minConfidence"),minimum);
+    if (!detections && type!=QStringLiteral("ALL")) fields.insert(QStringLiteral("types"),QJsonArray{type});
+    if (cursor.isObject()) fields.insert(QStringLiteral("cursor"),cursor);
+    m_latestMetadataQuery = sendRequest(detections ? QStringLiteral("GET_DETECTIONS") : QStringLiteral("GET_EVENTS"),id,fields);
+    return m_latestMetadataQuery;
+}
+QString VmsClient::requestEventPlayback(const QJsonObject &record) {
+    const bool sample = record.value(QStringLiteral("recordKind")).toString()==QStringLiteral("detection_sample");
+    const auto value = record.value(sample ? QStringLiteral("sampleId") : QStringLiteral("id"));
+    if (!value.isDouble() || value.toInteger(-1)<1 || record.value(QStringLiteral("cameraId")).toString().isEmpty()) return {};
+    QJsonObject fields{{sample ? QStringLiteral("sampleId") : QStringLiteral("eventId"),value},{"allowEstimated",true}};
+    m_latestPlaybackQuery = sendRequest(QStringLiteral("GET_EVENT_PLAYBACK"),record.value(QStringLiteral("cameraId")).toString(),fields);
+    return m_latestPlaybackQuery;
+}
+QString VmsClient::chatSearch(const QString &id,const QString &text) {
+    if (id.isEmpty() || text.trimmed().isEmpty() || text.toUtf8().size()>2048) return {};
+    m_latestChatQuery = sendRequest(QStringLiteral("CHAT_SEARCH"),id,{{"message",text},{"timezone","Asia/Seoul"}});
+    return m_latestChatQuery;
+}
 void VmsClient::requestRecordings(const QString &id, const QDateTime &from, const QDateTime &to) {
     if (!isConnected() || id.isEmpty() || !from.isValid() || !to.isValid() || from > to) {
         cancelRecordingSearch(); emit recordingSearchFailed(id, QStringLiteral("Connect to VMS and select a valid camera/time range")); return;
@@ -186,7 +215,7 @@ void VmsClient::fetchStream() {
     if (m_clock.elapsed() >= m_streamDeadline) {
         cancelStreamRequest(); emit streamError(QStringLiteral("VMS stream is not ready; retry after checking the camera")); return;
     }
-    auto url = m_httpBase; url.setPath(QStringLiteral("/api/v1/cameras/%1/stream").arg(m_streamCameraId));
+    auto url = m_httpBase; url.setPath(QStringLiteral("/api/v1/cameras/%1/direct-stream").arg(m_streamCameraId));
     QUrlQuery query; query.addQueryItem(QStringLiteral("transport"), m_streamTransport); url.setQuery(query);
     QNetworkRequest request(url); request.setTransferTimeout(5000);
     auto *reply = m_http.get(request); m_streamReply = reply;
@@ -204,9 +233,10 @@ void VmsClient::fetchStream() {
         const QUrl uri(data.value(QStringLiteral("uri")).toString());
         if (status != 200 || !object.value(QStringLiteral("ok")).toBool() || !data.value(QStringLiteral("ready")).toBool()
             || data.value(QStringLiteral("cameraId")).toString() != m_streamCameraId || !uri.isValid()
-            || uri.scheme() != QStringLiteral("rtsp") || uri.host().isEmpty() || !uri.userInfo().isEmpty()
+            || uri.scheme() != QStringLiteral("rtsp") || uri.host().isEmpty()
+            || data.value(QStringLiteral("source")).toString() != QStringLiteral("camera")
             || data.value(QStringLiteral("transport")).toString() != m_streamTransport) {
-            cancelStreamRequest(); emit streamError(QStringLiteral("VMS did not return a ready managed RTSP stream")); return;
+            cancelStreamRequest(); emit streamError(QStringLiteral("VMS did not return a camera-direct RTSP stream")); return;
         }
         const auto id = m_streamCameraId; m_streamCameraId.clear(); emit streamUriReady(id, uri);
     });
@@ -222,6 +252,18 @@ void VmsClient::receive(const QString &text) {
         emit message(QStringLiteral("VMS"), QStringLiteral("Unsupported VMS protocol version")); return;
     }
     const auto type = object.value(QStringLiteral("type")).toString();
+    if (type == QStringLiteral("notification")) {
+        const auto event=object.value(QStringLiteral("event")).toString();
+        if (event==QStringLiteral("CAMERA_METADATA") || event==QStringLiteral("CAMERA_EVENT") || event==QStringLiteral("EVENT_RECEIVER_STATUS")) {
+            const auto id=object.value(QStringLiteral("cameraId")).toString();
+            const auto data=object.value(QStringLiteral("data")).toObject();
+            if (id.isEmpty() || data.isEmpty() || (data.contains(QStringLiteral("cameraId")) && data.value(QStringLiteral("cameraId")).toString()!=id)) return;
+            if (event==QStringLiteral("CAMERA_METADATA")) emit metadataReceived(id,data);
+            else if (event==QStringLiteral("CAMERA_EVENT")) emit eventReceived(id,data);
+            else emit eventReceiverStatus(id,data);
+            return;
+        }
+    }
     if (type == QStringLiteral("notification") && object.value(QStringLiteral("event")).toString() == QStringLiteral("PTZ_RESULT")) {
         handlePtzResult(object); return;
     }
@@ -251,7 +293,41 @@ void VmsClient::receive(const QString &text) {
         emit requestFailed(id, failure.value(QStringLiteral("code")).toString(), failure.value(QStringLiteral("message")).toString()); return;
     }
     const auto data = object.value(QStringLiteral("data")).toObject();
-    if (pending.command.startsWith(QStringLiteral("PTZ_"))) {
+    if (pending.command==QStringLiteral("GET_EVENTS") || pending.command==QStringLiteral("GET_DETECTIONS")) {
+        if (id!=m_latestMetadataQuery) return;
+        m_latestMetadataQuery.clear();
+        const auto rows=data.value(pending.command==QStringLiteral("GET_EVENTS") ? QStringLiteral("events") : QStringLiteral("detections"));
+        if (!rows.isArray() || rows.toArray().size()>100 || (!data.value(QStringLiteral("nextCursor")).isNull() && !data.value(QStringLiteral("nextCursor")).isObject())) {
+            emit requestFailed(id,QStringLiteral("INVALID_RESPONSE"),QStringLiteral("Invalid metadata search results")); return;
+        }
+        for (const auto &row:rows.toArray()) {
+            const auto record=row.toObject();
+            if (!row.isObject() || record.value(QStringLiteral("cameraId")).toString()!=pending.cameraId || record.value(QStringLiteral("id")).toInteger(-1)<1
+                || !record.value(QStringLiteral("searchTimeMs")).isDouble()) {
+                emit requestFailed(id,QStringLiteral("INVALID_RESPONSE"),QStringLiteral("Metadata result camera/id/time mismatch")); return;
+            }
+        }
+        emit metadataSearchReceived(id,pending.cameraId,rows.toArray(),data.value(QStringLiteral("nextCursor"))); return;
+    }
+    if (pending.command==QStringLiteral("GET_EVENT_PLAYBACK")) {
+        if (id!=m_latestPlaybackQuery) return;
+        m_latestPlaybackQuery.clear();
+        if (!data.value(QStringLiteral("playable")).isBool() || (data.contains(QStringLiteral("cameraId")) && data.value(QStringLiteral("cameraId")).toString()!=pending.cameraId)) {
+            emit requestFailed(id,QStringLiteral("INVALID_RESPONSE"),QStringLiteral("Invalid playback result")); return;
+        }
+        emit eventPlaybackReceived(id,data); return;
+    }
+    if (pending.command==QStringLiteral("CHAT_SEARCH")) {
+        if (id!=m_latestChatQuery) return;
+        m_latestChatQuery.clear();
+        const auto action=data.value(QStringLiteral("action")).toString();
+        if ((action!=QStringLiteral("search") && action!=QStringLiteral("select_result") && action!=QStringLiteral("next_page") && action!=QStringLiteral("clarify") && action!=QStringLiteral("unsupported"))
+            || !data.value(QStringLiteral("answer")).isString() || !data.value(QStringLiteral("results")).isArray() || data.value(QStringLiteral("results")).toArray().size()>20) {
+            emit requestFailed(id,QStringLiteral("INVALID_RESPONSE"),QStringLiteral("Invalid chat result")); return;
+        }
+        emit chatSearchReceived(id,data); return;
+    }
+    if (pending.command.startsWith(QStringLiteral("PTZ_")) || pending.command.startsWith(QStringLiteral("TRACKING_"))) {
         if (data.value(QStringLiteral("phase")).toString() != QStringLiteral("ACCEPTED")
             || data.value(QStringLiteral("cameraId")).toString() != pending.cameraId
             || data.value(QStringLiteral("command")).toString() != pending.command) {
@@ -259,6 +335,7 @@ void VmsClient::receive(const QString &text) {
         }
         if (m_ptzResults.contains(id)) m_ptzResults[id].deadline = m_clock.elapsed() + 5000;
         emit message(QStringLiteral("PTZ VMS"), QStringLiteral("%1 %2 request=%3 ACCEPTED; Pi response pending").arg(pending.cameraId, pending.command, id));
+        emit controlPhase(pending.cameraId, pending.command, QStringLiteral("ACCEPTED"));
         return;
     }
     if (pending.command == QStringLiteral("GET_CAMERA_LIST")) {
@@ -326,13 +403,15 @@ bool VmsClient::ptzStopPending(const QString &cameraId) const {
 }
 QString VmsClient::sendPtz(const QString &command, const QString &cameraId, QJsonObject fields) {
     if (!isConnected() || cameraId.isEmpty()) {
+        emit controlPhase(cameraId,command,QStringLiteral("FAILED"));
         emit message(QStringLiteral("PTZ ERROR"), QStringLiteral("%1 %2 not sent: VMS disconnected or camera missing").arg(cameraId, command)); return {};
     }
     if (m_ptzResults.size() >= 64) {
+        emit controlPhase(cameraId,command,QStringLiteral("FAILED"));
         emit ptzFailed(cameraId, command, QStringLiteral("BUSY"), QStringLiteral("Too many unconfirmed PTZ commands")); return {};
     }
     const auto id = sendRequest(command, cameraId, fields);
-    if (id.isEmpty()) { emit ptzFailed(cameraId, command, QStringLiteral("SEND_FAILED"), QStringLiteral("VMS request not submitted")); return {}; }
+    if (id.isEmpty()) { emit controlPhase(cameraId,command,QStringLiteral("FAILED")); emit ptzFailed(cameraId, command, QStringLiteral("SEND_FAILED"), QStringLiteral("VMS request not submitted")); return {}; }
     m_ptzResults.insert(id, {command, cameraId, m_clock.elapsed() + 5000});
     const QString velocity = command == QStringLiteral("PTZ_MOVE")
         ? QStringLiteral(" pan=%1 tilt=%2").arg(fields.value(QStringLiteral("panVelocity")).toDouble()).arg(fields.value(QStringLiteral("tiltVelocity")).toDouble()) : QString();
@@ -340,6 +419,7 @@ QString VmsClient::sendPtz(const QString &command, const QString &cameraId, QJso
     return id;
 }
 QString VmsClient::sendPtzMove(const QString &cameraId, float pan, float tilt) {
+    m_deferredTracking.remove(cameraId);
     if (!std::isfinite(pan) || !std::isfinite(tilt) || std::abs(pan) > 1 || std::abs(tilt) > 1) {
         emit ptzFailed(cameraId, QStringLiteral("PTZ_MOVE"), QStringLiteral("INVALID_VELOCITY"), QStringLiteral("PTZ velocity must be finite and within -1..1")); return {};
     }
@@ -352,18 +432,33 @@ QString VmsClient::sendPtzMove(const QString &cameraId, float pan, float tilt) {
     return sendPtz(QStringLiteral("PTZ_MOVE"), cameraId, {{QStringLiteral("panVelocity"), pan}, {QStringLiteral("tiltVelocity"), tilt}});
 }
 QString VmsClient::sendPtzStop(const QString &cameraId) {
+    m_deferredTracking.remove(cameraId);
     m_queuedMoves.remove(cameraId); if (m_deferredCenter == cameraId) m_deferredCenter.clear();
     for (auto it = m_ptzResults.cbegin(); it != m_ptzResults.cend(); ++it)
         if (it->cameraId == cameraId && it->command == QStringLiteral("PTZ_STOP")) return it.key();
     return sendPtz(QStringLiteral("PTZ_STOP"), cameraId);
 }
 QString VmsClient::sendPtzCenter(const QString &cameraId) {
+    m_deferredTracking.remove(cameraId);
     m_queuedMoves.remove(cameraId);
     if (ptzStopPending(cameraId)) {
         m_deferredCenter = cameraId;
         emit message(QStringLiteral("PTZ VMS"), QStringLiteral("%1 CENTER waits for Pi STOP acknowledgement").arg(cameraId)); return {};
     }
     return sendPtz(QStringLiteral("PTZ_CENTER"), cameraId);
+}
+QString VmsClient::sendTracking(const QString &cameraId, bool enabled) {
+    m_queuedMoves.remove(cameraId); m_deferredCenter.clear();
+    if (ptzStopPending(cameraId)) {
+        m_deferredTracking.insert(cameraId,enabled);
+        emit message(QStringLiteral("TRACKING"),QStringLiteral("%1 waits for Pi STOP acknowledgement").arg(cameraId)); return {};
+    }
+    return sendPtz(enabled ? QStringLiteral("TRACKING_ON") : QStringLiteral("TRACKING_OFF"),cameraId);
+}
+bool VmsClient::ownsTracking(const QString &cameraId) const {
+    if (m_trackingOwners.contains(cameraId) || m_deferredTracking.value(cameraId,false)) return true;
+    for (const auto &request:m_ptzResults) if(request.cameraId==cameraId && request.command==QStringLiteral("TRACKING_ON"))return true;
+    return false;
 }
 void VmsClient::failPtz(const QString &requestId, const QString &code, const QString &reason) {
     if (!m_ptzResults.contains(requestId)) return;
@@ -373,6 +468,11 @@ void VmsClient::failPtz(const QString &requestId, const QString &code, const QSt
     }
     emit message(QStringLiteral("PTZ ERROR"), QStringLiteral("%1 %2 request=%3 %4: %5; Pi confirmation absent").arg(pending.cameraId, pending.command, requestId, code, reason));
     emit ptzFailed(pending.cameraId, pending.command, code, reason);
+    emit controlPhase(pending.cameraId,pending.command,QStringLiteral("FAILED"));
+    if (pending.command == QStringLiteral("PTZ_STOP") && m_deferredTracking.contains(pending.cameraId)) {
+        const bool desired=m_deferredTracking.take(pending.cameraId);
+        emit controlPhase(pending.cameraId,desired ? QStringLiteral("TRACKING_ON") : QStringLiteral("TRACKING_OFF"),QStringLiteral("FAILED"));
+    }
 }
 void VmsClient::handlePtzResult(const QJsonObject &object) {
     const auto id = object.value(QStringLiteral("requestId")).toString();
@@ -388,15 +488,20 @@ void VmsClient::handlePtzResult(const QJsonObject &object) {
     }
     if (phase == QStringLiteral("SUPERSEDED") && !object.value(QStringLiteral("ok")).toBool()) {
         m_ptzResults.remove(id);
-        emit message(QStringLiteral("PTZ VMS"), QStringLiteral("%1 %2 request=%3 SUPERSEDED; no Pi confirmation for this request").arg(pending.cameraId, pending.command, id)); return;
+        emit message(QStringLiteral("PTZ VMS"), QStringLiteral("%1 %2 request=%3 SUPERSEDED; no Pi confirmation for this request").arg(pending.cameraId, pending.command, id));
+        emit controlPhase(pending.cameraId,pending.command,QStringLiteral("SUPERSEDED")); return;
     }
     if (phase != QStringLiteral("PI_ACKNOWLEDGED") || !object.value(QStringLiteral("ok")).toBool()) {
         failPtz(id, QStringLiteral("INVALID_RESPONSE"), QStringLiteral("Invalid Pi acknowledgement")); return;
     }
     m_ptzResults.remove(id);
+    if (pending.command==QStringLiteral("TRACKING_ON")) m_trackingOwners.insert(pending.cameraId);
+    else m_trackingOwners.remove(pending.cameraId);
     emit message(QStringLiteral("PTZ PI"), QStringLiteral("%1 %2 request=%3 PI_ACKNOWLEDGED (ONVIF response; motor arrival not confirmed)").arg(pending.cameraId, pending.command, id));
+    emit controlPhase(pending.cameraId,pending.command,QStringLiteral("PI_ACKNOWLEDGED"));
     if (pending.command == QStringLiteral("PTZ_STOP") && !ptzStopPending(pending.cameraId)) {
-        if (m_deferredCenter == pending.cameraId) { m_deferredCenter.clear(); sendPtzCenter(pending.cameraId); }
+        if (m_deferredTracking.contains(pending.cameraId)) { const bool desired=m_deferredTracking.take(pending.cameraId); sendTracking(pending.cameraId,desired); }
+        else if (m_deferredCenter == pending.cameraId) { m_deferredCenter.clear(); sendPtzCenter(pending.cameraId); }
         else if (m_queuedMoves.contains(pending.cameraId)) {
             const auto movement = m_queuedMoves.take(pending.cameraId);
             if (m_clock.elapsed() - movement.time <= 400) sendPtzMove(pending.cameraId, movement.pan, movement.tilt);

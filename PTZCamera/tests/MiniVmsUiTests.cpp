@@ -30,13 +30,14 @@
 #include <QSlider>
 #include <QTabWidget>
 #include <QTcpSocket>
+#include <QTableView>
 #include <QtTest>
 
 void MiniVmsUiTests::cameraSelectionAndDummyIsolation() {
     MainWindow window;
     window.show(); window.resize(1200, 750); QCoreApplication::processEvents();
     QCOMPARE(window.size(), QSize(1200, 750));
-    QCOMPARE(window.findChild<QTabWidget *>()->count(), 4);
+    QCOMPARE(window.findChild<QTabWidget *>()->count(), 5);
     QVERIFY(window.findChildren<QTcpSocket *>().isEmpty());
     auto *list = window.findChild<CameraListWidget *>();
     QCOMPARE(list->selectedCameraId(), QStringLiteral("CAM01"));
@@ -117,7 +118,7 @@ void MiniVmsUiTests::unsupportedVmsControlsAndStreamAddress() {
     QVERIFY(method->model()->flags(method->model()->index(1, 0)) & Qt::ItemIsEnabled);
     QSignalSpy streamError(view, &CameraViewWidget::playbackError);
     method->setCurrentIndex(1);
-    view->startStream(QUrl(QStringLiteral("rtsp://127.0.0.1:8555/CAM01?transport=invalid")));
+    view->startStream(QUrl(QStringLiteral("http://127.0.0.1:8554/cam")));
     QCOMPARE(streamError.count(), 1); QVERIFY(!view->isPlaying());
     method->setCurrentIndex(0);
     QSignalSpy movement(window.findChild<PtzKeyboardController *>(), &PtzKeyboardController::moveRequested);
@@ -146,6 +147,9 @@ void MiniVmsUiTests::unsupportedVmsControlsAndStreamAddress() {
     device->cameraRegistered(QStringLiteral("CAM02")); QCOMPARE(state->text(), QStringLiteral("Connecting"));
     device->setStreamUri(QStringLiteral("CAM02"), QUrl(QStringLiteral("rtsp://127.0.0.1:8555/CAM02")));
     QCOMPARE(state->text(), QStringLiteral("Ready"));
+    device->setStreamUri(QStringLiteral("CAM02"), QUrl(QStringLiteral("rtsp://fixture:token@camera2:8554/cam")));
+    QCOMPARE(uri->text(), QStringLiteral("rtsp://camera2:8554/cam"));
+    QVERIFY(!uri->toolTip().contains(QStringLiteral("token")));
     device->setDiscoveryState(true, QStringLiteral("Searching...")); QVERIFY(uri->text().isEmpty());
     device->setDiscoveredCameras({{QStringLiteral("http://camera/onvif"), QStringLiteral("Unsafe"), QStringLiteral("camera"),
         QStringLiteral("test"), QStringLiteral("CAM03"), QStringLiteral("rtsp://user:password@127.0.0.1/CAM03"), false, false}});
@@ -181,14 +185,18 @@ void MiniVmsUiTests::missingRecordingDoesNotEnablePlayback() {
 
 void MiniVmsUiTests::recordingFilePlaysAndSeeks() {
     const QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
-    if (ffmpeg.isEmpty()) QSKIP("ffmpeg is required to generate the H.264 test recording");
+    const auto fixture=qEnvironmentVariable("VMS_TEST_RECORDING_FILE");
+    if (ffmpeg.isEmpty() && fixture.isEmpty()) QSKIP("ffmpeg or VMS_TEST_RECORDING_FILE is required");
     QTemporaryDir directory; QVERIFY(directory.isValid());
     const QString path = directory.filePath(QStringLiteral("녹화 테스트.mkv"));
     QProcess generator;
+    if (!fixture.isEmpty()) { QVERIFY(QFile::copy(fixture,path)); }
+    else {
     generator.start(ffmpeg, {QStringLiteral("-v"), QStringLiteral("error"), QStringLiteral("-f"), QStringLiteral("lavfi"),
         QStringLiteral("-i"), QStringLiteral("testsrc2=size=160x120:rate=10"), QStringLiteral("-t"), QStringLiteral("4"),
         QStringLiteral("-c:v"), QStringLiteral("libx264"), QStringLiteral("-pix_fmt"), QStringLiteral("yuv420p"), QStringLiteral("-y"), path});
     QVERIFY(generator.waitForFinished(10000)); QCOMPARE(generator.exitCode(), 0);
+    }
     PlaybackWidget playback; playback.setLocalVms(true); playback.show();
     RecordingInfo recording; recording.cameraId = QStringLiteral("CAM01"); recording.filePath = path;
     recording.startTime = QDateTime(QDate::currentDate(), QTime(10, 0)); recording.endTime = recording.startTime.addSecs(4);
@@ -228,6 +236,43 @@ void MiniVmsUiTests::helpButtonShowsGuide() {
     QVERIFY(!dialog->isModal()); QCOMPARE(dialog->findChild<QTabWidget *>()->count(), 3);
     dialog->close(); QVERIFY(!dialog->isVisible()); help->click(); QVERIFY(dialog->isVisible());
     QCOMPARE(window.findChildren<HelpDialog *>().size(), 1);
+}
+void MiniVmsUiTests::metadataPlaybackUsesMillisecondOffset() {
+    const auto ffmpeg=QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    const auto fixture=qEnvironmentVariable("VMS_TEST_RECORDING_FILE");
+    if (ffmpeg.isEmpty() && fixture.isEmpty()) QSKIP("ffmpeg or VMS_TEST_RECORDING_FILE is required");
+    QTemporaryDir directory; QVERIFY(directory.isValid()); const auto path=directory.filePath(QStringLiteral("metadata-search.mkv"));
+    if (!fixture.isEmpty()) { QVERIFY(QFile::copy(fixture,path)); }
+    else {
+        QProcess generator; generator.start(ffmpeg,{"-v","error","-f","lavfi","-i","testsrc2=size=160x120:rate=10","-t","4","-c:v","libx264","-pix_fmt","yuv420p","-y",path});
+        QVERIFY(generator.waitForFinished(10000)); QCOMPARE(generator.exitCode(),0);
+    }
+    PlaybackWidget playback; playback.setLocalVms(true);
+    const auto start=QDateTime::currentMSecsSinceEpoch()-4000;
+    QJsonObject descriptor{{"cameraId","CAM01"},{"playable",true},{"offsetMs",1234},{"timeMapping","receive_estimated"},
+        {"recording",QJsonObject{{"cameraId","CAM01"},{"startTimeMs",start},{"endTimeMs",start+4000},{"duration",4.0},{"filePath",path}}}};
+    QSignalSpy frames(&playback,&PlaybackWidget::playbackFrameReceived), errors(&playback,&PlaybackWidget::playbackFailed);
+    const bool opened=playback.openPlaybackResult(descriptor);
+    QVERIFY2(opened,errors.isEmpty() ? "No playback error" : qPrintable(errors.first()[0].toString()));
+    auto *player=playback.findChild<QMediaPlayer*>(); QVERIFY(player);
+    QSignalSpy positions(player,&QMediaPlayer::positionChanged);
+    QTRY_VERIFY_WITH_TIMEOUT(frames.count()>0 || errors.count()>0,10000);
+    if (!errors.isEmpty() && errors.first()[0].toString().contains(QStringLiteral("해당 시각으로 이동할 수 없습니다"))) {
+        QCOMPARE(frames.count(),0); QVERIFY(!playback.findChild<QSlider*>()->isEnabled());
+        qInfo()<<"Backend cannot seek: confirmed requested event offset is refused, not played from zero"; return;
+    }
+    QVERIFY2(errors.isEmpty(),errors.isEmpty() ? "" : qPrintable(errors.first()[0].toString()));
+    bool exact=false; for (const auto& row:positions) if (row[0].toLongLong()==1234) exact=true;
+    QVERIFY(exact); QVERIFY(playback.findChild<QLabel*>(QStringLiteral("recordingResultCount"))->text().contains(QStringLiteral("추정")));
+    descriptor["playable"]=false; descriptor["reason"]="NO_RECORDING_AT_TIME";
+    QVERIFY(!playback.openPlaybackResult(descriptor));
+    QVERIFY(!playback.findChild<QSlider*>()->isEnabled());
+}
+void MiniVmsUiTests::resultTableNavigationDoesNotMovePtz() {
+    QWidget window; QTableView table(&window); window.show(); window.activateWindow(); table.show(); table.setFocus();
+    QTRY_COMPARE(QApplication::activeWindow(),&window);
+    PtzKeyboardController keyboard(&window); keyboard.setEnabled(true); QSignalSpy movement(&keyboard,&PtzKeyboardController::moveRequested);
+    QTest::keyClick(&table,Qt::Key_Down); QTest::keyClick(&table,Qt::Key_W); QCOMPARE(movement.count(),0);
 }
 void MiniVmsUiTests::ptzRefreshStopsAndKeepsOldCameraIdentity() {
     PtzCommandController controller;

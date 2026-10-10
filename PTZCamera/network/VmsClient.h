@@ -3,6 +3,8 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QJsonObject>
+#include <QSet>
+#include <QJsonArray>
 #include <QObject>
 #include <QNetworkAccessManager>
 #include <QPointer>
@@ -31,8 +33,23 @@ public:
     QString sendPtzMove(const QString &cameraId, float panVelocity, float tiltVelocity);
     QString sendPtzStop(const QString &cameraId);
     QString sendPtzCenter(const QString &cameraId);
+    QString sendTracking(const QString &cameraId, bool enabled);
+    bool ownsTracking(const QString &cameraId) const;
+    QString searchMetadata(const QString &cameraId,const QDateTime &from,const QDateTime &to,
+        bool detections,const QString &type,double minConfidence,const QJsonValue &cursor = {});
+    QString requestEventPlayback(const QJsonObject &record);
+    QString chatSearch(const QString &cameraId,const QString &text);
+    void cancelInteractiveRequests();
+    void cancelMetadataSearch() { m_latestMetadataQuery.clear(); }
 signals:
+    void metadataReceived(const QString &cameraId,const QJsonObject &data);
+    void eventReceived(const QString &cameraId,const QJsonObject &data);
+    void eventReceiverStatus(const QString &cameraId,const QJsonObject &data);
+    void metadataSearchReceived(const QString &requestId,const QString &cameraId,const QJsonArray &records,const QJsonValue &cursor);
+    void eventPlaybackReceived(const QString &requestId,const QJsonObject &data);
+    void chatSearchReceived(const QString &requestId,const QJsonObject &data);
     void ptzFailed(const QString &cameraId, const QString &command, const QString &code, const QString &message);
+    void controlPhase(const QString &cameraId, const QString &command, const QString &phase);
     void serverConnectionChanged(bool connected);
     void cameraListReceived(const QList<CameraInfo> &cameras);
     void cameraStatusChanged(const CameraInfo &camera);
@@ -59,6 +76,8 @@ private:
     struct PtzMove { float pan, tilt; qint64 time; };
     QHash<QString, PtzMove> m_queuedMoves;
     QString m_deferredCenter;
+    QHash<QString,bool> m_deferredTracking;
+    QSet<QString> m_trackingOwners;
     QWebSocket *m_socket = nullptr;
     QHash<QString, Pending> m_pending;
     QTimer m_connectTimer, m_requestTimer, m_heartbeat;
@@ -66,6 +85,7 @@ private:
     qint64 m_lastActivity = 0;
     quint64 m_nextRequest = 0;
     QString m_latestRecordingQuery;
+    QString m_latestMetadataQuery,m_latestPlaybackQuery,m_latestChatQuery;
     QNetworkAccessManager m_http;
     QPointer<QNetworkReply> m_streamReply;
     QTimer m_streamRetry;

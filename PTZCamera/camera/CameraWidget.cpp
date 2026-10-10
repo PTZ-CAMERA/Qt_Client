@@ -88,24 +88,25 @@ void CameraWidget::paintEvent(QPaintEvent *event)
     painter.drawEllipse(frameCenter, 2, 2);
 
     if (m_hasDetection) {
+        // metadata 기준 영상 크기를 사용한다. decoder 프레임 크기가 달라도 좌표 기준을 섞지 않는다.
+        const auto metadataSize=m_detection.imageSize.isValid() ? m_detection.imageSize : sourceSize;
+        const qreal boxScaleX=view.width()/metadataSize.width(), boxScaleY=view.height()/metadataSize.height();
         // 탐지 상자의 위치와 크기에 영상과 동일한 배율을 적용한다.
-        const QRectF box(view.left() + m_detection.boundingBox.x() * scaleX,
-                         view.top() + m_detection.boundingBox.y() * scaleY,
-                         m_detection.boundingBox.width() * scaleX,
-                         m_detection.boundingBox.height() * scaleY);
+        const QRectF box(view.left() + m_detection.boundingBox.x() * boxScaleX,
+                         view.top() + m_detection.boundingBox.y() * boxScaleY,
+                         m_detection.boundingBox.width() * boxScaleX,
+                         m_detection.boundingBox.height() * boxScaleY);
         const QColor accent("#52d7a5");
         painter.setPen(QPen(accent, 2));
         painter.setBrush(Qt::NoBrush);
         painter.drawRect(box);
 
-        const QPointF objectCenter = mapPoint(m_detection.center);
+        const QPointF objectCenter(view.left()+m_detection.center.x()*boxScaleX,view.top()+m_detection.center.y()*boxScaleY);
         painter.drawLine(objectCenter + QPointF(-7, 0), objectCenter + QPointF(7, 0));
         painter.drawLine(objectCenter + QPointF(0, -7), objectCenter + QPointF(0, 7));
 
         // 신뢰도는 0~1 값을 백분율로 표시한다. 상자 위에 공간이 부족하면 안쪽에 둔다.
-        const QString caption = QStringLiteral("%1  %2%")
-                                    .arg(m_detection.label)
-                                    .arg(qRound(m_detection.confidence * 100.0F));
+        const QString caption = m_detection.hasConfidence ? QStringLiteral("%1  %2%").arg(m_detection.label).arg(qRound(m_detection.confidence * 100.0F)) : m_detection.label;
         QFont font = painter.font();
         font.setPixelSize(13);
         font.setBold(true);

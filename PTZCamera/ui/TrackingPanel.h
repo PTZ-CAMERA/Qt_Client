@@ -2,6 +2,8 @@
 
 #include <QWidget>
 #include "model/TrackingInfo.h"
+#include <QJsonObject>
+#include <QTimer>
 
 class QLabel;
 class QPushButton;
@@ -17,6 +19,11 @@ public:
     void setState(State state);
     bool trackingEnabled() const;
     void updateTrackingInfo(const TrackingInfo &info);
+    void updateMetadata(const QJsonObject &metadata);
+    void setControlAvailable(bool available);
+    void beginCommand(bool enabled);
+    void commandPhase(const QString &phase);
+    void cancelCommand(const QString &reason);
 
 signals:
     void trackingChanged(bool enabled);
@@ -32,4 +39,7 @@ private:
     QLabel *m_pan = nullptr;
     QLabel *m_tilt = nullptr;
     bool m_enabled = false;
+    bool m_available = false, m_waiting = false, m_desired = false;
+    QLabel *m_commandStatus = nullptr;
+    QTimer m_confirmation;
 };

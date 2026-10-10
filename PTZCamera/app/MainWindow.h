@@ -1,6 +1,9 @@
 #pragma once
 #include "model/VmsTypes.h"
 #include <QMainWindow>
+#include <QJsonObject>
+#include <QTimer>
+#include <QHash>
 class CameraListWidget;
 class CameraViewWidget;
 class ConnectionStatusWidget;
@@ -19,6 +22,7 @@ class QTabWidget;
 class HelpDialog;
 class PtzCommandController;
 class QLabel;
+class ChatSearchWidget;
 // 화면 배치, cameraId 선택과 Dummy/VMS 데이터 연결을 담당한다.
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -32,6 +36,9 @@ private:
     void applyCameraStatus(const CameraInfo &camera);
     void requestStop();
     void requestCenter();
+    void applyMetadata(const QString &cameraId,const QJsonObject &data);
+    void openMetadataPlayback(const QJsonObject &data);
+    void requestMetadataPlayback(const QJsonObject &record);
     CameraListWidget *m_list = nullptr;
     CameraViewWidget *m_view = nullptr;
     PTZControlWidget *m_ptz = nullptr;
@@ -49,6 +56,7 @@ private:
     QCheckBox *m_dummyToggle = nullptr;
     QTabWidget *m_tabs = nullptr;
     HelpDialog *m_help = nullptr;
+    ChatSearchWidget *m_chat = nullptr;
     StatusIndicatorWidget *m_headerVms = nullptr;
     StatusIndicatorWidget *m_vmsStatus = nullptr;
     StatusIndicatorWidget *m_cameraStatus = nullptr;
@@ -58,5 +66,9 @@ private:
     CameraInfo m_current;
     QString m_registerSelection;
     QString m_discoveryRequestId;
+    QString m_playbackRequestId;
+    QJsonObject m_metadata;
+    QHash<QString,qint64> m_metadataSourceTimes;
+    QTimer m_metadataExpiry;
     bool m_liveWanted = false, m_streamRequestPending = false;
 };

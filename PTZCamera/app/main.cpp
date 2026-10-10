@@ -3,6 +3,10 @@
 #include "MainWindow.h"
 
 #include <QApplication>
+#include <QLoggingCategory>
+#include <QRegularExpression>
+#include <cstdio>
+#include <cstdlib>
 
 // QApplication은 위젯의 입력, 화면 갱신, 타이머와 비동기 신호를 처리한다.
 // app.exec()가 실행되는 동안 창이 사용자 입력과 네트워크 응답에 반응한다.
@@ -10,6 +14,14 @@ int main(int argc, char *argv[])
 {
     // RTSP TCP/UDP 전송 설정을 처리하는 FFmpeg 백엔드를 앱 생성 전에 지정한다.
     qputenv("QT_MEDIA_BACKEND", "ffmpeg");
+    qputenv("QT_FFMPEG_DEBUG", "0");
+    QLoggingCategory::setFilterRules(QStringLiteral("qt.multimedia.ffmpeg.*=false"));
+    // RTSP 원본 URI에 임시 인증 정보가 있어도 Qt 진단 메시지에는 노출하지 않는다.
+    qInstallMessageHandler([](QtMsgType type, const QMessageLogContext &, const QString &message) {
+        auto safe = message; safe.replace(QRegularExpression(QStringLiteral("rtsp://[^/\\s@]+@")), QStringLiteral("rtsp://[redacted]@"));
+        const auto bytes = safe.toUtf8(); std::fprintf(stderr, "%s\n", bytes.constData());
+        if (type == QtFatalMsg) std::abort();
+    });
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("Mini VMS Desktop Client"));
     // 기본 Dummy Mode; --no-dummy로 시작하면 DEVICE에서 VMS에 연결한다.

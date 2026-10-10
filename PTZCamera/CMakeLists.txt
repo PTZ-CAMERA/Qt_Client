@@ -26,6 +26,7 @@ set(VMS_UI_SOURCES
     camera/CameraViewWidget.h camera/CameraViewWidget.cpp
     demo/DummyDataProvider.h demo/DummyDataProvider.cpp
     events/EventSearchWidget.h events/EventSearchWidget.cpp
+    chat/ChatSearchWidget.h chat/ChatSearchWidget.cpp
     playback/PlaybackWidget.h playback/PlaybackWidget.cpp
     device/DeviceInfoWidget.h device/DeviceInfoWidget.cpp
     log/SystemLogWidget.h log/SystemLogWidget.cpp

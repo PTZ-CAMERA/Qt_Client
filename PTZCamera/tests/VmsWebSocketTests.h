@@ -9,4 +9,6 @@ private slots:
     void uiClearsRealStateWhenDisconnectedOrDummyEnabled();
     void realVmsServer();
     void ptzAcceptanceAndPiConfirmationAreSeparate();
+    void metadataSearchChatAndScopeIsolation();
+    void trackingUsesConfirmedMetadataAndSurvivesIdleFocusChanges();
 };

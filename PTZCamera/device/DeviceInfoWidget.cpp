@@ -100,8 +100,10 @@ void DeviceInfoWidget::setDiscoveredCameras(const QList<DiscoveredCamera> &devic
 
 void DeviceInfoWidget::setStreamUri(const QString &cameraId, const QUrl &uri) {
     if (cameraId != m_selectedDeviceId || cameraId.isEmpty() || !uri.isValid() || uri.scheme() != QStringLiteral("rtsp")
-        || uri.host().isEmpty() || !uri.userInfo().isEmpty()) return;
-    m_streamUri->setText(uri.toString(QUrl::FullyEncoded)); m_streamUri->setToolTip(m_streamUri->text());
+        || uri.host().isEmpty()) return;
+    // 직접 RTSP 인증은 player의 메모리에서만 사용한다. 화면·복사·tooltip에는 계정이 없다.
+    auto display = uri; display.setUserInfo(QString());
+    m_streamUri->setText(display.toString(QUrl::FullyEncoded)); m_streamUri->setToolTip(m_streamUri->text());
     m_streamUri->setCursorPosition(0);
     m_streamState->setText(QStringLiteral("Ready"));
     for (auto &device : m_discovered) if (device.cameraId == cameraId) {

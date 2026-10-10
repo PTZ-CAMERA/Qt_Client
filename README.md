@@ -33,10 +33,11 @@ flowchart LR
     end
     Services <-->|RTSP / ONVIF / Metadata| VMS
     API <-->|REST / WebSocket| Client
-    API -->|VMS RTSP URI| Video
+    API -->|ONVIF 조회한 카메라 직접 URI| Video
+    Camera -->|직접 RTSP TCP/UDP| Video
 ```
 
-Qt 기본 실행 파일은 Pi에 직접 접속하지 않습니다. 검색·등록·PTZ는 VMS API를 사용하고 라이브 영상은 VMS가 반환한 RTSP 주소로 재생합니다. WebRTC는 기본 Qt 클라이언트에서 사용하지 않습니다. 그림의 Pi AI·메타데이터 기능은 시스템 설계이며 실제 동작은 Pi와 서버 구현에 달려 있습니다.
+Qt 라이브는 Pi에 직접 RTSP로 연결합니다. VMS가 ONVIF로 조회한 카메라 URI를 direct-stream API에서 제공하며 검색·등록·PTZ·메타데이터·녹화는 VMS에 유지합니다. WebRTC는 기본 Qt 클라이언트에서 사용하지 않습니다.
 
 ## 클라이언트 내부 구조
 
@@ -48,7 +49,7 @@ flowchart LR
     Client <-->|"목록 / 상태 / PTZ / 녹화"| WS["VMS WebSocket"]
     Client <-->|"RTSP 주소 / 준비 상태"| REST["VMS HTTP API"]
     Main --> View["CameraViewWidget"]
-    RTSP["VMS RTSP TCP / UDP"] --> Player["QMediaPlayer"]
+    RTSP["카메라 직접 RTSP TCP / UDP"] --> Player["QMediaPlayer"]
     Player --> Sink["QVideoSink / QImage"]
     Sink --> View
     View --> Painter["CameraWidget · QPainter"]
@@ -71,7 +72,11 @@ flowchart LR
 | 녹화 재생 | 완료된 로컬 파일 선택·재생, Play/Pause/Stop 및 탐색 |
 | 장치·로그 | DEVICE 상태·스트림 통계, SYSTEM LOG, 상단 도움말 |
 | Dummy Mode | 서버 없이 샘플 영상·이벤트·타임라인 확인 |
-| Tracking / EVENTS | 실제 서버 기능 미지원으로 비활성화; Dummy에서 UI 확인 |
+| 실시간 메타데이터 | VMS 알림으로 bbox·confidence·추적 상태·명령 각도 표시; 오래된 bbox 제거 |
+| EVENTS | 상태 이력/탐지 샘플 검색, confidence 필터·페이지네이션·연결 녹화 재생 |
+| CHAT SEARCH | VMS 자연어 검색, 결과 선택·다음 페이지·녹화 재생 |
+
+Tracking ON/OFF는 지원 카메라에서 활성화됩니다. 요청/Pi 응답과 실제 metadata 상태를 구분하며 수동 PTZ는 추적을 해제합니다. 이벤트 재생은 offsetMs를 사용하고 추정 시각이면 표시합니다. 녹화 파일은 같은 PC에서 접근해야 합니다.
 
 PTZ는 서버의 카메라 capability에 따라 활성화됩니다. `PTZ TX`는 전송, `PTZ VMS`는 서버 승인, `PTZ PI`는 Pi ONVIF 응답입니다. Pi 응답은 모터의 목표 위치 도달 확인이 아닙니다.
 
@@ -85,7 +90,7 @@ PTZ는 서버의 카메라 capability에 따라 활성화됩니다. `PTZ TX`는 
 │ Camera List  │ RTSP TCP / UDP · Start/Stop   │ Buttons / Keys  │
 │ Online / REC │ REC START / REC STOP         │ Tracking Info   │
 ├──────────────┴──────────────────────────────┴─────────────────┤
-│ EVENTS │ PLAYBACK │ DEVICE │ SYSTEM LOG                      │
+│ EVENTS │ PLAYBACK │ DEVICE │ SYSTEM LOG │ CHAT SEARCH        │
 ├─────────────────────────────────────────────────────────────┤
 │ VMS / Camera / Stream / Recording Status                     │
 └─────────────────────────────────────────────────────────────┘
@@ -134,6 +139,7 @@ Qt_Client/
     ├── device/                   # VMS 연결·검색/등록·통계
     ├── playback/                 # 녹화 검색 결과·로컬 영상 재생
     ├── events/                   # 이벤트 검색 UI
+    ├── chat/                     # 자연어 검색·결과 선택
     ├── log/                      # System Log
     ├── model/                    # Camera / Detection / Recording 정보
     ├── demo/                     # 네트워크와 분리한 Dummy 데이터
@@ -151,7 +157,7 @@ cmake --build build-vms --parallel
 ctest --test-dir build-vms --output-on-failure
 ```
 
-기존 빌드 디렉터리의 Kit·Generator를 사용합니다. 테스트에는 Qt Test가 추가로 필요합니다. Linux Qt 환경에서 앱 빌드와 `MiniVmsUiTests`, `VmsWebSocketTests`가 통과했습니다. Windows/MSVC 실행 및 실제 Pi 서보 동작은 추가 확인이 필요합니다. 지연 시간은 측정 결과가 없어 수치로 보장하지 않습니다.
+기존 빌드 디렉터리의 Kit·Generator를 사용합니다. 테스트에는 Qt Test가 추가로 필요합니다. Linux에서는 UI·WebSocket 및 실제 VMS와의 검색 계약을 검증하고, Windows Qt 6.11/MSVC에서는 모의 서버·합성 녹화 파일로 검증합니다. 실제 Pi 영상·메타데이터·서보 및 장시간 시험은 사용자가 수행합니다. 지연 시간은 수치로 보장하지 않습니다.
 
 [개발·진단 안내](PTZCamera/README.md) · [아키텍처 기록](docs/QT_VMS_CLIENT_ARCHITECTURE.md) · [세션 기록](docs/SESSION_2026-10-08.md) · [PTZ 기술 결정](PTZCamera/docs/tech-decisions/0011-vms-ptz-input.md)
 
@@ -163,4 +169,4 @@ ctest --test-dir build-vms --output-on-failure
 | [Qt_Client](https://github.com/PTZ-CAMERA/Qt_Client) | Qt 데스크톱 화면과 VMS 클라이언트 |
 | [PTZ_WEB_Client](https://github.com/PTZ-CAMERA/PTZ_WEB_Client) | WebRTC 영상·PTZ용 브라우저 화면 |
 
-웹 영상은 별도 WHEP 주소에 연결합니다. VMS의 WebRTC gateway는 아직 인터페이스 단계이고 웹의 PTZ 요청도 현재 서버 계약에 맞춘 수정이 필요합니다.
+Web 영상은 VMS의 relay를 읽는 PC MediaMTX WebRTC 게이트웨이에 연결합니다. Web 녹화 재생은 제외하고 Qt 로컬 녹화 재생은 유지합니다.

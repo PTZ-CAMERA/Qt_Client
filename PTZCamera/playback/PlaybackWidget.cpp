@@ -162,6 +162,34 @@ void PlaybackWidget::openSelectedRecording() {
     const int index = m_recordings->currentIndex();
     if (index >= 0 && index < m_results.size()) openRecording(m_results[index], m_results[index].startTime);
 }
+bool PlaybackWidget::openPlaybackResult(const QJsonObject &result) {
+    clear();
+    const QSignalBlocker cameraBlocker(m_camera), dateBlocker(m_date);
+    if (!result.value(QStringLiteral("playable")).isBool() || !result.value(QStringLiteral("playable")).toBool()) {
+        showPlaybackError(QStringLiteral("녹화 재생 불가: %1").arg(result.value(QStringLiteral("reason")).toString(QStringLiteral("UNKNOWN")))); return false;
+    }
+    const auto record=result.value(QStringLiteral("recording")).toObject();
+    const auto offset=result.value(QStringLiteral("offsetMs"));
+    const auto start=record.value(QStringLiteral("startTimeMs")), end=record.value(QStringLiteral("endTimeMs"));
+    const auto camera=result.value(QStringLiteral("cameraId")).toString();
+    if (camera.isEmpty() || record.value(QStringLiteral("cameraId")).toString()!=camera || !offset.isDouble() || offset.toInteger(-1)<0
+        || !start.isDouble() || !end.isDouble() || end.toInteger()<=start.toInteger()
+        || !record.value(QStringLiteral("duration")).isDouble() || offset.toDouble()>=record.value(QStringLiteral("duration")).toDouble()*1000
+        || record.value(QStringLiteral("filePath")).toString().isEmpty()) {
+        showPlaybackError(QStringLiteral("Invalid VMS playback result")); return false;
+    }
+    m_current.cameraId=camera; m_current.startTime=QDateTime::fromMSecsSinceEpoch(start.toInteger(),Qt::UTC).toLocalTime();
+    m_current.endTime=QDateTime::fromMSecsSinceEpoch(end.toInteger(),Qt::UTC).toLocalTime(); m_current.filePath=record.value(QStringLiteral("filePath")).toString();
+    setSelectedCamera(camera); m_date->setDate(m_current.startTime.date());
+    m_startTime->setText(m_current.startTime.toString(QStringLiteral("HH:mm:ss"))); m_endTime->setText(m_current.endTime.toString(QStringLiteral("HH:mm:ss")));
+    if (!m_localVms) { showPlaybackError(QStringLiteral("원격 VMS 파일은 로컬에서 바로 열 수 없습니다. OPEN FILE로 복사본을 선택하세요.")); return false; }
+    // 초 단위 start/end 차이로 재계산하지 않고 서버가 반환한 ms offset을 그대로 사용한다.
+    startFile(m_current.filePath,offset.toInteger());
+    if (!m_player) return false;
+    m_resultCount->setText(result.value(QStringLiteral("timeMapping")).toString()==QStringLiteral("receive_estimated")
+        ? QStringLiteral("탐지 기록 재생 · 추정 시각 · offset %1 ms").arg(offset.toInteger()) : QStringLiteral("탐지 기록 재생"));
+    return m_player!=nullptr;
+}
 void PlaybackWidget::openRecording(const RecordingInfo &recording, const QDateTime &targetTime) {
     clear();
     const qint64 duration = recording.startTime.secsTo(recording.endTime);
@@ -220,6 +248,12 @@ void PlaybackWidget::startFile(const QString &path, qint64 offsetMs) {
     connect(m_sink, &QVideoSink::videoFrameChanged, this, [this, generation](const QVideoFrame &frame) {
         if (generation != m_generation || !frame.isValid()) return;
         const auto image = frame.toImage(); if (image.isNull()) return;
+        if (m_pendingSeekMs>0) {
+            if (!m_player->isSeekable() || m_player->duration()<=0) {
+                return; // Loaded 후 metadata가 준비될 수 있다. 시각 이동 전 frame은 표시하지 않는다.
+            }
+            const auto offset=m_pendingSeekMs; m_pendingSeekMs=0; m_player->setPosition(offset); return;
+        }
         m_loadTimeout.stop(); m_receivedFrame = true;
         m_cameraView->setFrame(image); m_videoStack->setCurrentWidget(m_cameraView); m_controls->setEnabled(true);
         const bool seekable = m_player->isSeekable() && m_player->duration() > 0;
@@ -252,7 +286,16 @@ void PlaybackWidget::startFile(const QString &path, qint64 offsetMs) {
     connect(m_player, &QMediaPlayer::mediaStatusChanged, this, [this, generation](QMediaPlayer::MediaStatus status) {
         if (generation != m_generation) return;
         if (status == QMediaPlayer::LoadedMedia && m_pendingSeekMs > 0 && m_player->isSeekable() && m_player->duration() > 0) {
-            m_player->setPosition(m_durationMs > 0 ? std::min(m_pendingSeekMs, m_durationMs) : m_pendingSeekMs); m_pendingSeekMs = 0;
+            if (m_pendingSeekMs>=m_player->duration()) { showPlaybackError(QStringLiteral("검색 시각이 실제 파일 재생 범위 밖입니다.")); return; }
+            const auto offset=m_pendingSeekMs; m_pendingSeekMs=0; m_player->setPosition(offset);
+        }
+        if ((status==QMediaPlayer::LoadedMedia || status==QMediaPlayer::BufferedMedia) && m_pendingSeekMs>0) {
+            QTimer::singleShot(500,this,[this,generation]{
+                if (generation!=m_generation || !m_player || m_pendingSeekMs<=0) return;
+                if (m_player->isSeekable() && m_player->duration()>0 && m_pendingSeekMs<m_player->duration()) {
+                    const auto offset=m_pendingSeekMs; m_pendingSeekMs=0; m_player->setPosition(offset);
+                } else showPlaybackError(QStringLiteral("이 재생 backend는 해당 시각으로 이동할 수 없습니다. 파일 처음부터 재생을 원하면 OPEN FILE을 사용하세요."));
+            });
         }
         if (status == QMediaPlayer::EndOfMedia) m_playbackState->setText(QStringLiteral("Finished"));
     });
@@ -266,7 +309,9 @@ void PlaybackWidget::startFile(const QString &path, qint64 offsetMs) {
     });
     m_loadTimeout.start();
     auto *player = m_player;
-    player->setSourceDevice(source, QUrl::fromLocalFile(file.absoluteFilePath()));
+    // Qt 6.4 sourceDevice는 duration/seek가 없을 수 있어, 시각 검색은 로컬 URL로 연다.
+    if (offsetMs>0) player->setSource(QUrl::fromLocalFile(file.absoluteFilePath()));
+    else player->setSourceDevice(source, QUrl::fromLocalFile(file.absoluteFilePath()));
     // setSource도 즉시 오류 신호를 낼 수 있어, 정리된 플레이어를 다시 호출하지 않는다.
     if (generation == m_generation && m_player == player) player->play();
 }

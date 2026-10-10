@@ -16,6 +16,9 @@ struct CameraInfo {
     bool online = false;
     bool supportsRecordings = false;
     bool supportsPtz = false, supportsPtzCenter = false;
+    bool supportsEvents = false, supportsChatSearch = false;
+    bool supportsTracking = false;
+    QString eventsStatus = QStringLiteral("DISABLED");
     bool recording = false, recordingRequested = false;
     QString recordingState = QStringLiteral("STOPPED"), recordingError;
     bool tracking = false;
@@ -36,6 +39,8 @@ struct DetectionInfo {
     QPoint objectCenter;
     int errorX = 0;
     int errorY = 0;
+    QSize imageSize;
+    bool hasConfidence = true;
 };
 struct EventInfo {
     QDateTime timestamp;

@@ -8,9 +8,11 @@
 - `camera/CameraViewWidget`: QMediaPlayer → QVideoSink → QImage를 기존 QPainter CameraWidget에 표시합니다. 별도의 libavcodec worker 구현은 현재 없습니다.
 - `ui/PtzCommandController`: 버튼·키보드 입력을 합치고 이동 명령을 200ms마다 갱신합니다.
 - `playback/PlaybackWidget`: 녹화 검색 결과를 표시하고 완료된 로컬 파일을 Qt Multimedia로 재생합니다.
+- `events/EventSearchWidget`: 탐지 샘플/상태 이력과 confidence 필터·페이지네이션을 제공하며 서버 재생 위치를 조회합니다.
+- `chat/ChatSearchWidget`: VMS CHAT_SEARCH 응답·결과·추가 질문을 표시합니다. Qt에서 Gemini 키나 API를 직접 사용하지 않습니다.
 - `app/MainWindow`: 카메라 선택과 위젯·클라이언트 signal/slot을 연결합니다.
 
-WebSocket 기본 주소는 `ws://127.0.0.1:5000/ws`입니다. 동일 Host/Port의 HTTP에서 `/api/v1/cameras/{cameraId}/stream`을 조회합니다. 실제 카메라 capability에 따라 PTZ가 활성화되며 Tracking·EVENTS 실기능은 비활성화 상태입니다.
+WebSocket 기본 주소는 `ws://127.0.0.1:5000/ws`입니다. HTTP `/api/v1/cameras/{cameraId}/direct-stream?transport=tcp|udp`에서 카메라 URI를 받아 직접 RTSP로 연결하고 계정을 숨깁니다. PTZ·Tracking ON/OFF·채팅은 capability를 확인합니다. 추적 요청과 실제 상태는 구분하며 녹화·검색·재생 위치 조회는 VMS를 사용합니다.
 
 ## 이전 직접 연결 화면
 

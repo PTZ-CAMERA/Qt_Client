@@ -14,6 +14,26 @@
 #include <QUrl>
 #include <QUrlQuery>
 #include <QStandardItemModel>
+#include <QCoreApplication>
+#include <QDir>
+#include <QLibrary>
+namespace {
+void quietRtspDiagnostics() {
+    // Qt가 이미 사용하는 avutil의 로그를 끈다. 직접 URI에 든 인증이 FFmpeg stderr에 나오지 않게 한다.
+    const auto quiet = [](const QString &name, int version = -1) {
+        QLibrary library(name, version);
+        using SetLevel = void (*)(int);
+        if (auto setLevel = reinterpret_cast<SetLevel>(library.resolve("av_log_set_level"))) setLevel(-8);
+    };
+#ifdef Q_OS_WIN
+    const QDir folder(QCoreApplication::applicationDirPath());
+    for (const auto &file : folder.entryList({QStringLiteral("avutil-*.dll")}, QDir::Files)) quiet(folder.filePath(file));
+#else
+    quiet(QStringLiteral("avutil"));
+    for (int version = 56; version <= 61; ++version) quiet(QStringLiteral("avutil"), version);
+#endif
+}
+}
 CameraViewWidget::CameraViewWidget(QWidget *parent) : QWidget(parent) {
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -29,7 +49,7 @@ CameraViewWidget::CameraViewWidget(QWidget *parent) : QWidget(parent) {
     m_method->setObjectName(QStringLiteral("rtspTransport"));
     m_method->addItem(QStringLiteral("RTSP TCP"), QStringLiteral("tcp"));
     m_method->addItem(QStringLiteral("RTSP UDP"), QStringLiteral("udp"));
-    m_method->setToolTip(QStringLiteral("VMS RTSP transport: TCP interleaved or UDP RTP/RTCP"));
+    m_method->setToolTip(QStringLiteral("Camera-direct RTSP transport: TCP interleaved or UDP RTP/RTCP"));
     controls->addWidget(m_method);
     auto *start = new QPushButton(QStringLiteral("Start"), this);
     auto *stop = new QPushButton(QStringLiteral("Stop"), this);
@@ -57,7 +77,7 @@ CameraViewWidget::CameraViewWidget(QWidget *parent) : QWidget(parent) {
 }
 void CameraViewWidget::setDetection(const DetectionInfo &info) {
     if (!info.detected) { clearDetection(); return; }
-    m_view->setDetection({info.boundingBox, info.label, info.confidence, info.objectCenter});
+    m_view->setDetection({info.boundingBox, info.label, info.confidence, info.objectCenter, info.imageSize, info.hasConfidence});
 }
 void CameraViewWidget::clearDetection() { m_view->clearDetection(); }
 void CameraViewWidget::setCameraName(const QString &name) { m_name->setText(name); }
@@ -79,17 +99,18 @@ void CameraViewWidget::setLive(bool live, bool simulated) {
 
 void CameraViewWidget::startStream(const QUrl &uri) {
     stopStream();
-    if (!uri.isValid() || uri.scheme() != QStringLiteral("rtsp") || !uri.userInfo().isEmpty()) {
-        emit playbackError(QStringLiteral("Invalid VMS stream address")); return;
+    if (!uri.isValid() || uri.scheme() != QStringLiteral("rtsp") || uri.host().isEmpty()) {
+        emit playbackError(QStringLiteral("Invalid camera stream address")); return;
     }
-    auto transport = QUrlQuery(uri).queryItemValue(QStringLiteral("transport"));
-    if (transport.isEmpty()) transport = selectedTransport();
+    // 원본 URI의 query는 카메라 계약이다. 전송 방식은 Qt UI 선택을 그대로 사용한다.
+    const auto transport = selectedTransport();
     if (transport != QStringLiteral("tcp") && transport != QStringLiteral("udp")) {
         emit playbackError(QStringLiteral("Invalid RTSP transport")); return;
     }
     qputenv("QT_FFMPEG_RTSP_TRANSPORT", transport.toUtf8());
     m_playing = true; const auto generation = m_generation;
     m_player = new QMediaPlayer(this); m_sink = new QVideoSink(this); m_player->setVideoSink(m_sink);
+    quietRtspDiagnostics();
     connect(m_sink, &QVideoSink::videoFrameChanged, this, [this, generation](const QVideoFrame &frame) {
         if (generation != m_generation || !m_playing || !frame.isValid()) return;
         const auto image = frame.toImage(); if (image.isNull()) return;
@@ -97,7 +118,7 @@ void CameraViewWidget::startStream(const QUrl &uri) {
     });
     connect(m_player, &QMediaPlayer::errorOccurred, this, [this, generation](QMediaPlayer::Error, const QString &) {
         if (generation != m_generation || !m_playing) return;
-        stopStream(); emit playbackError(QStringLiteral("VMS RTSP playback failed"));
+        stopStream(); emit playbackError(QStringLiteral("Camera RTSP playback failed"));
     });
     m_frameTimeout->start();
     auto *player = m_player; player->setSource(uri);

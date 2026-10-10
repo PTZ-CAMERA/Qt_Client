@@ -2,6 +2,7 @@
 #include "model/VmsTypes.h"
 #include <QTimer>
 #include <QWidget>
+#include <QJsonObject>
 class QComboBox;
 class QDateEdit;
 class QTimeEdit;
@@ -23,6 +24,7 @@ public:
     void setRecordings(const QList<RecordingInfo> &recordings);
     void openRecording(const RecordingInfo &recording, const QDateTime &targetTime);
     void openLocalFile(const QString &path);
+    bool openPlaybackResult(const QJsonObject &result);
     void setLocalVms(bool local) { m_localVms = local; }
     void clear();
     void setSearchAvailable(bool available);

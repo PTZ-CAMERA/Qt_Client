@@ -13,6 +13,8 @@ private slots:
     void unsupportedVmsControlsAndStreamAddress();
     void missingRecordingDoesNotEnablePlayback();
     void recordingFilePlaysAndSeeks();
+    void metadataPlaybackUsesMillisecondOffset();
+    void resultTableNavigationDoesNotMovePtz();
     void helpButtonShowsGuide();
     void ptzRefreshStopsAndKeepsOldCameraIdentity();
     void wasdIgnoresRepeatReleaseAndCentersWithC();
