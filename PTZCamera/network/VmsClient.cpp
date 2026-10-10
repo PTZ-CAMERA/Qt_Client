@@ -151,6 +151,9 @@ void VmsClient::clearPending(const QString &code, const QString &reason) {
 QString VmsClient::request(const QString &command, const QString &cameraId) {
     return sendRequest(command, cameraId, {});
 }
+QString VmsClient::setAutoRecording(const QString &id,bool enabled) {
+    return sendRequest(QStringLiteral("SET_AUTO_RECORDING"),id,{{QStringLiteral("enabled"),enabled}});
+}
 QString VmsClient::sendRequest(const QString &command, const QString &cameraId, QJsonObject object) {
     if (!isConnected()) { emit message(QStringLiteral("VMS"), QStringLiteral("Connect to VMS first")); return {}; }
     if (m_pending.size() >= 64) { emit message(QStringLiteral("VMS"), QStringLiteral("Too many pending VMS requests")); return {}; }
@@ -293,6 +296,18 @@ void VmsClient::receive(const QString &text) {
         emit requestFailed(id, failure.value(QStringLiteral("code")).toString(), failure.value(QStringLiteral("message")).toString()); return;
     }
     const auto data = object.value(QStringLiteral("data")).toObject();
+    if (pending.command==QStringLiteral("SET_AUTO_RECORDING")) {
+        if (data.value(QStringLiteral("cameraId")).toString()!=pending.cameraId || !data.value(QStringLiteral("autoRecordingEnabled")).isBool()) {
+            emit requestFailed(id,QStringLiteral("INVALID_RESPONSE"),QStringLiteral("Invalid automatic recording response")); return;
+        }
+        emit autoRecordingConfigured(id,pending.cameraId,data.value(QStringLiteral("autoRecordingEnabled")).toBool()); return;
+    }
+    if (pending.command==QStringLiteral("GET_METADATA_STATUS")) {
+        if (data.value(QStringLiteral("cameraId")).toString()!=pending.cameraId) {
+            emit requestFailed(id,QStringLiteral("INVALID_RESPONSE"),QStringLiteral("Metadata status camera mismatch")); return;
+        }
+        emit metadataStatusReceived(id,data); return;
+    }
     if (pending.command==QStringLiteral("GET_EVENTS") || pending.command==QStringLiteral("GET_DETECTIONS")) {
         if (id!=m_latestMetadataQuery) return;
         m_latestMetadataQuery.clear();

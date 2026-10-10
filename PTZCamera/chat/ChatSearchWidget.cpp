@@ -79,7 +79,10 @@ void ChatSearchWidget::acceptResponse(const QString &id,const QJsonObject &data)
             for (const auto &text:{QDateTime::fromMSecsSinceEpoch(record.value(QStringLiteral("searchTimeMs")).toInteger(),Qt::UTC).toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz")),
                 record.value(QStringLiteral("cameraId")).toString(),record.value(QStringLiteral("type")).toString(),
                 confidence.isDouble() && std::isfinite(confidence.toDouble()) ? QString::number(confidence.toDouble()*100,'f',0)+QStringLiteral("%") : QStringLiteral("—"),
-                playback.value(QStringLiteral("playable")).toBool() ? QStringLiteral("추정 시각 재생 가능") : QStringLiteral("녹화 없음")}) row.append(new QStandardItem(text));
+                playback.value(QStringLiteral("playable")).toBool() ? QStringLiteral("추정 시각 재생 가능")
+                : playback.value(QStringLiteral("reason")).toString()==QStringLiteral("RECORDING_IN_PROGRESS") ? QStringLiteral("녹화 중 · 파일 확정 대기")
+                : playback.value(QStringLiteral("reason")).toString()==QStringLiteral("NO_RECORDING_AT_TIME") ? QStringLiteral("해당 시각 녹화 없음")
+                : QStringLiteral("재생 불가: %1").arg(playback.value(QStringLiteral("reason")).toString())}) row.append(new QStandardItem(text));
             m_model->appendRow(row);
         }
         m_next->setProperty("hasNext",data.value(QStringLiteral("nextCursor")).isObject());

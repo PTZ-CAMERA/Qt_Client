@@ -3,6 +3,7 @@
 #include "PlaybackWidget.h"
 #include "camera/CameraWidget.h"
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDateEdit>
 #include <QTimeEdit>
 #include <QFileDialog>
@@ -25,6 +26,8 @@
 
 PlaybackWidget::PlaybackWidget(QWidget *parent) : QWidget(parent) {
     auto *layout = new QVBoxLayout(this);
+    m_preRoll = new QCheckBox(QStringLiteral("탐지 결과는 2초 전부터 재생 (같은 녹화 파일 범위 내)"),this);
+    m_preRoll->setObjectName(QStringLiteral("metadataPreRoll")); m_preRoll->setChecked(true); layout->addWidget(m_preRoll);
     auto *searchRow = new QHBoxLayout;
     m_camera = new QComboBox(this); m_date = new QDateEdit(QDate::currentDate(), this);
     m_date->setCalendarPopup(true); m_date->setDisplayFormat(QStringLiteral("yyyy-MM-dd"));
@@ -166,7 +169,10 @@ bool PlaybackWidget::openPlaybackResult(const QJsonObject &result) {
     clear();
     const QSignalBlocker cameraBlocker(m_camera), dateBlocker(m_date);
     if (!result.value(QStringLiteral("playable")).isBool() || !result.value(QStringLiteral("playable")).toBool()) {
-        showPlaybackError(QStringLiteral("녹화 재생 불가: %1").arg(result.value(QStringLiteral("reason")).toString(QStringLiteral("UNKNOWN")))); return false;
+        const auto reason=result.value(QStringLiteral("reason")).toString(QStringLiteral("UNKNOWN"));
+        showPlaybackError(reason==QStringLiteral("RECORDING_IN_PROGRESS") ? QStringLiteral("녹화 중 · 파일 확정 대기. 녹화 중지 또는 구간 완료 후 다시 조회하세요.")
+            : reason==QStringLiteral("NO_RECORDING_AT_TIME") ? QStringLiteral("탐지 기록은 있지만 해당 시각의 녹화가 없습니다.")
+            : QStringLiteral("녹화 재생 불가: %1").arg(reason)); return false;
     }
     const auto record=result.value(QStringLiteral("recording")).toObject();
     const auto offset=result.value(QStringLiteral("offsetMs"));
@@ -183,11 +189,12 @@ bool PlaybackWidget::openPlaybackResult(const QJsonObject &result) {
     setSelectedCamera(camera); m_date->setDate(m_current.startTime.date());
     m_startTime->setText(m_current.startTime.toString(QStringLiteral("HH:mm:ss"))); m_endTime->setText(m_current.endTime.toString(QStringLiteral("HH:mm:ss")));
     if (!m_localVms) { showPlaybackError(QStringLiteral("원격 VMS 파일은 로컬에서 바로 열 수 없습니다. OPEN FILE로 복사본을 선택하세요.")); return false; }
-    // 초 단위 start/end 차이로 재계산하지 않고 서버가 반환한 ms offset을 그대로 사용한다.
-    startFile(m_current.filePath,offset.toInteger());
+    // 서버의 추정 위치를 보존하고 UI에서 선택한 사전 재생 시간만 뺀다. 이전 파일로 넘기지 않는다.
+    const auto playbackOffset=std::max<qint64>(0,offset.toInteger()-(m_preRoll->isChecked() ? 2000 : 0));
+    startFile(m_current.filePath,playbackOffset);
     if (!m_player) return false;
     m_resultCount->setText(result.value(QStringLiteral("timeMapping")).toString()==QStringLiteral("receive_estimated")
-        ? QStringLiteral("탐지 기록 재생 · 추정 시각 · offset %1 ms").arg(offset.toInteger()) : QStringLiteral("탐지 기록 재생"));
+        ? QStringLiteral("탐지 기록 재생 · 추정 시각 %1 ms · 재생 시작 %2 ms").arg(offset.toInteger()).arg(playbackOffset) : QStringLiteral("탐지 기록 재생"));
     return m_player!=nullptr;
 }
 void PlaybackWidget::openRecording(const RecordingInfo &recording, const QDateTime &targetTime) {

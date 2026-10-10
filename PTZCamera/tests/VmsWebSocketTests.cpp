@@ -52,6 +52,7 @@ public:
     bool ptz = false;
     bool features = false;
     bool tracking = false;
+    bool automatic = false;
     QList<QJsonObject> featureRequests;
     QJsonObject featureCamera() const {
         auto c=camera();
@@ -78,6 +79,14 @@ public:
                 QJsonObject reply{{"version", 1}, {"type", "response"}, {"requestId", request.value("requestId")}, {"ok", true}};
                 if (command == QStringLiteral("GET_CAMERA_LIST")) reply.insert("data", QJsonObject{{"cameras", QJsonArray{featureCamera()}}});
                 else if (command == QStringLiteral("GET_CAMERA_STATUS")) reply.insert("data", QJsonObject{{"camera", featureCamera()}});
+                else if (features && command==QStringLiteral("SET_AUTO_RECORDING")) {
+                    automatic=request.value("enabled").toBool();
+                    reply["data"]=QJsonObject{{"cameraId","CAM01"},{"autoRecordingEnabled",automatic}};
+                }
+                else if (features && command==QStringLiteral("GET_METADATA_STATUS")) {
+                    reply["data"]=QJsonObject{{"cameraId","CAM01"},{"storedDetections",3},{"samplingEnabled",true},
+                        {"lastReceivedTimeMs",QDateTime::currentMSecsSinceEpoch()},{"recording",QJsonObject{{"state","STOPPED"},{"autoRecordingEnabled",automatic}}}};
+                }
                 else if (features && (command==QStringLiteral("GET_EVENTS") || command==QStringLiteral("GET_DETECTIONS"))) {
                     featureRequests.append(request);
                     reply["data"]=QJsonObject{{command==QStringLiteral("GET_EVENTS") ? "events" : "detections",QJsonArray{row(command==QStringLiteral("GET_EVENTS"))}},{"nextCursor",QJsonObject{{"id",1},{"timeMs",QDateTime::currentMSecsSinceEpoch()}}}};
@@ -425,5 +434,20 @@ db.execute('INSERT INTO detection_index VALUES(?,?,?,?)',(s.lastrowid,'CAM01',st
     }
     process.terminate(); QVERIFY(process.waitForFinished(4000)); QCOMPARE(process.exitCode(), 0);
     QTRY_VERIFY(!client->isConnected()); QTRY_VERIFY(list->selectedCameraId().isEmpty());
+}
+void VmsWebSocketTests::automaticRecordingModeUsesServerConfirmation() {
+    MockVms server; server.features=true;
+    MainWindow window(nullptr,false); window.show();
+    auto *client=window.findChild<VmsClient*>(); client->connectToServer(QStringLiteral("127.0.0.1"),server.server.serverPort());
+    QTRY_VERIFY(client->isConnected());
+    auto *toggle=window.findChild<QCheckBox*>(QStringLiteral("autoRecordingToggle"));
+    QTRY_VERIFY_WITH_TIMEOUT(toggle->isEnabled(),5000); QVERIFY(!toggle->isChecked());
+    QSignalSpy confirmed(client,&VmsClient::autoRecordingConfigured);
+    QTest::mouseClick(toggle,Qt::LeftButton); QTRY_COMPARE(confirmed.count(),1);
+    QVERIFY(server.automatic); QVERIFY(toggle->isChecked()); QTRY_VERIFY(toggle->isEnabled());
+    auto *status=window.findChild<QLabel*>(QStringLiteral("metadataDiagnostics"));
+    QTRY_VERIFY(status->text().contains(QStringLiteral("3건")));
+    QTest::mouseClick(toggle,Qt::LeftButton); QTRY_COMPARE(confirmed.count(),2); QVERIFY(!server.automatic);
+    client->disconnectFromServer(); QTRY_VERIFY(!toggle->isEnabled());
 }
 QTEST_MAIN(VmsWebSocketTests)

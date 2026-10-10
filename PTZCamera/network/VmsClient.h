@@ -39,9 +39,12 @@ public:
         bool detections,const QString &type,double minConfidence,const QJsonValue &cursor = {});
     QString requestEventPlayback(const QJsonObject &record);
     QString chatSearch(const QString &cameraId,const QString &text);
+    QString setAutoRecording(const QString &cameraId,bool enabled);
     void cancelInteractiveRequests();
     void cancelMetadataSearch() { m_latestMetadataQuery.clear(); }
 signals:
+    void metadataStatusReceived(const QString &requestId,const QJsonObject &data);
+    void autoRecordingConfigured(const QString &requestId,const QString &cameraId,bool enabled);
     void metadataReceived(const QString &cameraId,const QJsonObject &data);
     void eventReceived(const QString &cameraId,const QJsonObject &data);
     void eventReceiverStatus(const QString &cameraId,const QJsonObject &data);

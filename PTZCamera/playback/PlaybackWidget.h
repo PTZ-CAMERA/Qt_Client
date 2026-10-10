@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QJsonObject>
 class QComboBox;
+class QCheckBox;
 class QDateEdit;
 class QTimeEdit;
 class QLabel;
@@ -66,4 +67,5 @@ private:
     QTimer m_timer;
     RecordingInfo m_current;
     QList<RecordingInfo> m_results;
+    QCheckBox *m_preRoll = nullptr;
 };

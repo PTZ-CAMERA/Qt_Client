@@ -248,6 +248,7 @@ void MiniVmsUiTests::metadataPlaybackUsesMillisecondOffset() {
         QVERIFY(generator.waitForFinished(10000)); QCOMPARE(generator.exitCode(),0);
     }
     PlaybackWidget playback; playback.setLocalVms(true);
+    playback.findChild<QCheckBox*>(QStringLiteral("metadataPreRoll"))->setChecked(false);
     const auto start=QDateTime::currentMSecsSinceEpoch()-4000;
     QJsonObject descriptor{{"cameraId","CAM01"},{"playable",true},{"offsetMs",1234},{"timeMapping","receive_estimated"},
         {"recording",QJsonObject{{"cameraId","CAM01"},{"startTimeMs",start},{"endTimeMs",start+4000},{"duration",4.0},{"filePath",path}}}};
@@ -264,6 +265,13 @@ void MiniVmsUiTests::metadataPlaybackUsesMillisecondOffset() {
     QVERIFY2(errors.isEmpty(),errors.isEmpty() ? "" : qPrintable(errors.first()[0].toString()));
     bool exact=false; for (const auto& row:positions) if (row[0].toLongLong()==1234) exact=true;
     QVERIFY(exact); QVERIFY(playback.findChild<QLabel*>(QStringLiteral("recordingResultCount"))->text().contains(QStringLiteral("추정")));
+    // 서버 offset은 그대로 두고 선택한 2초 사전 재생만 적용한다.
+    playback.findChild<QCheckBox*>(QStringLiteral("metadataPreRoll"))->setChecked(true);
+    descriptor["offsetMs"]=3234;
+    QVERIFY(playback.openPlaybackResult(descriptor));
+    // 재생 전환 시 이전 player는 deleteLater 대기 중일 수 있어 새 player를 관찰한다.
+    player=playback.findChildren<QMediaPlayer*>().last(); QSignalSpy preRollPositions(player,&QMediaPlayer::positionChanged);
+    QTRY_VERIFY_WITH_TIMEOUT([&]{for (const auto& row:preRollPositions) if (row[0].toLongLong()==1234) return true; return false;}(),10000);
     descriptor["playable"]=false; descriptor["reason"]="NO_RECORDING_AT_TIME";
     QVERIFY(!playback.openPlaybackResult(descriptor));
     QVERIFY(!playback.findChild<QSlider*>()->isEnabled());

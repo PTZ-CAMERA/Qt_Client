@@ -17,6 +17,7 @@
 #include "ui/TrackingPanel.h"
 #include "ui/HelpDialog.h"
 #include <QCheckBox>
+#include <QSignalBlocker>
 #include <QFile>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -73,7 +74,53 @@ MainWindow::MainWindow(QWidget *parent, bool dummyMode) : QMainWindow(parent) {
     m_tracking->setToolTip(QStringLiteral("VMS tracking/metadata API is not supported"));
     connect(m_dummyToggle, &QCheckBox::toggled, unsupported, [unsupported](bool enabled) { unsupported->setVisible(!enabled); });
     rightLayout->addWidget(makePanel(QStringLiteral("PTZ CONTROL"), m_ptz));
-    rightLayout->addWidget(makePanel(QStringLiteral("TRACKING / OBJECT INFORMATION"), m_tracking)); rightLayout->addStretch();
+    rightLayout->addWidget(makePanel(QStringLiteral("TRACKING / OBJECT INFORMATION"), m_tracking));
+    m_diagnostics = new QLabel(QStringLiteral("VMS 연결 후 탐지·저장 상태를 확인합니다."),this);
+    m_diagnostics->setObjectName(QStringLiteral("metadataDiagnostics")); m_diagnostics->setWordWrap(true);
+    m_autoRecording=new QCheckBox(QStringLiteral("자동 녹화 · Tracking ON에서 사람 탐지 시"),this);
+    m_autoRecording->setObjectName(QStringLiteral("autoRecordingToggle")); m_autoRecording->setEnabled(false);
+    rightLayout->addWidget(m_autoRecording);
+    connect(m_autoRecording,&QCheckBox::toggled,this,[this](bool enabled){
+        if (m_dummy->isEnabled() || !m_client->isConnected() || m_current.id.isEmpty()) return;
+        m_autoRecording->setEnabled(false);
+        m_autoRecordingRequestId=m_client->setAutoRecording(m_current.id,enabled);
+    });
+    connect(m_client,&VmsClient::autoRecordingConfigured,this,[this](const QString &id,const QString &camera,bool enabled){
+        if (id!=m_autoRecordingRequestId || camera!=m_current.id) return;
+        m_autoRecordingRequestId.clear(); const QSignalBlocker blocker(m_autoRecording);
+        m_autoRecording->setChecked(enabled); m_autoRecording->setEnabled(m_client->isConnected() && m_current.supportsEvents);
+        addLog(QStringLiteral("REC"),enabled ? QStringLiteral("탐지 자동 녹화 ON · Tracking ON 필요") : QStringLiteral("탐지 자동 녹화 OFF"));
+    });
+    rightLayout->addWidget(makePanel(QStringLiteral("DETECTION / RECORDING STATUS"),m_diagnostics)); rightLayout->addStretch();
+    // DB 조회는 비동기로 요청하며 이전 요청이 끝나기 전에는 중복 조회하지 않는다.
+    m_diagnosticsTimer.setInterval(2000);
+    connect(&m_diagnosticsTimer,&QTimer::timeout,this,[this]{
+        if (m_dummy->isEnabled() || !m_client->isConnected() || m_current.id.isEmpty()) {
+            m_autoRecording->setEnabled(false);
+            m_diagnosticsRequestId.clear(); m_diagnostics->setText(QStringLiteral("실제 VMS와 카메라를 연결하세요.")); return;
+        }
+        if (m_diagnosticsRequestId.isEmpty()) m_diagnosticsRequestId=m_client->request(QStringLiteral("GET_METADATA_STATUS"),m_current.id);
+    });
+    m_diagnosticsTimer.start();
+    connect(m_client,&VmsClient::metadataStatusReceived,this,[this](const QString &requestId,const QJsonObject &data){
+        if (requestId!=m_diagnosticsRequestId) return;
+        m_diagnosticsRequestId.clear();
+        if (m_dummy->isEnabled() || data.value(QStringLiteral("cameraId")).toString()!=m_current.id) return;
+        const auto timeText=[](const QJsonValue &v){return v.isDouble() ? QDateTime::fromMSecsSinceEpoch(v.toInteger()).toLocalTime().toString(QStringLiteral("MM-dd HH:mm:ss")) : QStringLiteral("없음");};
+        const auto age=QDateTime::currentMSecsSinceEpoch()-data.value(QStringLiteral("detectedAtMs")).toInteger(0);
+        const auto detected=data.value(QStringLiteral("detected"));
+        const auto detection=detected.isBool() && age>=0 && age<3000 && m_current.eventsStatus==QStringLiteral("SUBSCRIBED")
+            ? detected.toBool() ? QStringLiteral("사람 있음") : QStringLiteral("사람 없음") : QStringLiteral("현재 상태 미확인");
+        const auto rec=data.value(QStringLiteral("recording")).toObject();
+        if (m_autoRecordingRequestId.isEmpty()) {
+            const QSignalBlocker blocker(m_autoRecording); m_autoRecording->setChecked(rec.value(QStringLiteral("autoRecordingEnabled")).toBool());
+            m_autoRecording->setEnabled(m_current.supportsEvents);
+        }
+        m_diagnostics->setText(QStringLiteral("이벤트 연결: %1\n마지막 수신: %2\n마지막 샘플 저장: %3\n탐지: %4\n저장된 탐지 샘플: %5건\n샘플 저장: %6\n녹화: %7")
+            .arg(m_current.eventsStatus,timeText(data.value(QStringLiteral("lastReceivedTimeMs"))),timeText(data.value(QStringLiteral("lastStoredTimeMs"))),detection)
+            .arg(data.value(QStringLiteral("storedDetections")).toInteger())
+            .arg(data.value(QStringLiteral("samplingEnabled")).toBool() ? QStringLiteral("ON") : QStringLiteral("OFF"),rec.value(QStringLiteral("state")).toString(QStringLiteral("미확인"))));
+    });
     rightScroll->setWidget(right); top->addWidget(rightScroll);
     top->setStretchFactor(0, 0); top->setStretchFactor(1, 1); top->setStretchFactor(2, 0); top->setSizes({200, 850, 280});
     vertical->addWidget(top); m_tabs = new QTabWidget(this);
@@ -107,6 +154,8 @@ MainWindow::MainWindow(QWidget *parent, bool dummyMode) : QMainWindow(parent) {
         m_headerVms->setState(text, state); m_vmsStatus->setState(text, state);
         m_connection->setServerStatus(connected ? ConnectionStatusWidget::Status::Connected : ConnectionStatusWidget::Status::Disconnected);
         if (!connected) {
+            m_autoRecordingRequestId.clear(); m_autoRecording->setEnabled(false);
+            m_diagnosticsRequestId.clear(); m_diagnostics->setText(QStringLiteral("VMS 연결 끊김 · 상태 미확인"));
             m_metadata={}; m_metadataSourceTimes.clear(); m_metadataExpiry.stop(); m_playbackRequestId.clear();
             m_client->cancelInteractiveRequests(); m_events->resetResults(); m_events->setSearchAvailable(false);
             m_chat->setContext({},false); m_tabs->setTabEnabled(0,false);
@@ -126,6 +175,8 @@ MainWindow::MainWindow(QWidget *parent, bool dummyMode) : QMainWindow(parent) {
         m_connection->setServerStatus(ConnectionStatusWidget::Status::Error);
     });
     connect(m_client, &VmsClient::requestFailed, this, [this](const QString &id, const QString &code, const QString &reason) {
+        if (id==m_autoRecordingRequestId) { m_autoRecordingRequestId.clear(); m_autoRecording->setEnabled(false); }
+        if (id==m_diagnosticsRequestId) { m_diagnosticsRequestId.clear(); m_diagnostics->setText(QStringLiteral("탐지·저장 상태 조회 실패: %1").arg(code)); }
         addLog(QStringLiteral("VMS"), QStringLiteral("Request %1: %2 — %3").arg(id, code, reason));
         if (!m_discoveryRequestId.isEmpty() && id == m_discoveryRequestId) {
             m_discoveryRequestId.clear(); m_device->setDiscoveryState(false, reason);
@@ -376,6 +427,8 @@ QWidget *MainWindow::makePanel(const QString &title, QWidget *content) {
 }
 // 선택 변경 시 이전 장치의 표시와 입력을 정리해 cameraId 간 정보가 섞이지 않게 한다.
 void MainWindow::selectCamera(const QString &id) {
+    m_autoRecordingRequestId.clear(); m_autoRecording->setEnabled(false);
+    m_diagnosticsRequestId.clear(); m_diagnostics->setText(QStringLiteral("선택한 카메라의 탐지·저장 상태 조회 대기"));
     if (!m_dummy->isEnabled() && id!=m_current.id && !m_current.id.isEmpty() && m_client->ownsTracking(m_current.id)) m_client->sendPtzStop(m_current.id);
     m_tracking->cancelCommand(QString());
     m_metadata={}; m_metadataSourceTimes.clear(); m_metadataExpiry.stop(); m_client->cancelInteractiveRequests(); m_playbackRequestId.clear();

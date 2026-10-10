@@ -67,6 +67,11 @@ private:
     QString m_registerSelection;
     QString m_discoveryRequestId;
     QString m_playbackRequestId;
+    QString m_diagnosticsRequestId;
+    QString m_autoRecordingRequestId;
+    QCheckBox *m_autoRecording = nullptr;
+    QLabel *m_diagnostics = nullptr;
+    QTimer m_diagnosticsTimer;
     QJsonObject m_metadata;
     QHash<QString,qint64> m_metadataSourceTimes;
     QTimer m_metadataExpiry;

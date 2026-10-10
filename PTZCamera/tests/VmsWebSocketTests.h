@@ -11,4 +11,5 @@ private slots:
     void ptzAcceptanceAndPiConfirmationAreSeparate();
     void metadataSearchChatAndScopeIsolation();
     void trackingUsesConfirmedMetadataAndSurvivesIdleFocusChanges();
+    void automaticRecordingModeUsesServerConfirmation();
 };

@@ -38,3 +38,11 @@ ctest --test-dir build-vms --output-on-failure
 `MiniVmsUiTests`는 UI 선택·Dummy·입력·녹화 표시를, `VmsWebSocketTests`는 mock VMS의 연결·요청·오류·PTZ 응답을 검증합니다. 실제 VMS 검사에는 `VMS_SERVER_TEST_EXECUTABLE`, 카메라 설정 검사에는 `VMS_TEST_CAMERA_CONFIG`를 사용할 수 있습니다. 자동 테스트 성공과 Windows·Pi 하드웨어 검증은 구분합니다.
 
 [기술 결정 기록](docs/tech-decisions/) · [아키텍처 기록](../docs/QT_VMS_CLIENT_ARCHITECTURE.md) · [최근 세션](../docs/SESSION_2026-10-08.md)
+
+## 최신 자동 녹화와 상태 조회
+
+MainWindow의 자동 녹화 체크박스는 SET_AUTO_RECORDING, 진단 패널은 GET_METADATA_STATUS를 사용합니다. 늦게 연결해도 서버 모드와 저장 수를 조회하며 이전 cameraId/requestId 응답을 무시합니다. Qt에 자동 녹화 타이머나 탐지 알고리즘을 중복 구현하지 않습니다.
+
+ChatSearch/Playback은 녹화 중·녹화 없음·기타 재생 실패를 구분하고, 옵션으로 탐지 offset보다 2초 앞에서 동일 파일을 재생합니다. 현재 offset은 추정 시각입니다.
+
+WebRTC는 Web 클라이언트가 VMS 내부 libdatachannel에 연결하는 별도 경로이며 Qt 라이브는 Pi 직접 RTSP입니다. Pi 최신 JSON tracking_set/get과 VMS의 기존 ONVIF Tracking 계약 차이는 저장소 루트 README를 확인하세요.
