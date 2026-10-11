@@ -12,6 +12,9 @@
 #include "ui/TrackingPanel.h"
 #include "camera/CameraViewWidget.h"
 #include "device/DeviceInfoWidget.h"
+#include "chat/ChatSearchWidget.h"
+#include "log/SystemLogWidget.h"
+#include "ui/ConnectionStatusWidget.h"
 #include <QClipboard>
 #include <QComboBox>
 #include <QDateEdit>
@@ -25,6 +28,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QListView>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QSlider>
@@ -32,6 +36,51 @@
 #include <QTcpSocket>
 #include <QTableView>
 #include <QtTest>
+
+void MiniVmsUiTests::navigationKeepsControlsAndStopsHiddenPtz() {
+    MainWindow window; window.show(); window.activateWindow(); QTest::qWait(50);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("mainNavigation"));
+    QVERIFY(tabs); QCOMPARE(tabs->count(), 5);
+    const QStringList pages{"LIVE", "PLAYBACK", "EVENTS", "SEARCH", "SETTINGS"};
+    for (int i = 0; i < pages.size(); ++i) QCOMPARE(tabs->tabText(i), pages[i]);
+    QCOMPARE(tabs->currentIndex(), 0);
+    auto *view = window.findChild<CameraViewWidget *>();
+    auto *device = window.findChild<DeviceInfoWidget *>();
+    auto *connection = window.findChild<ConnectionStatusWidget *>();
+    auto *commands = window.findChild<PtzCommandController *>();
+    auto *keyboard = window.findChild<PtzKeyboardController *>();
+    auto *ptz = window.findChild<PTZControlWidget *>();
+    QVERIFY(view->isVisible()); QVERIFY(ptz->isVisible()); QVERIFY(!device->isVisible()); QVERIFY(!connection->isVisible());
+    QSignalSpy stopped(commands, &PtzCommandController::stopRequested);
+    QSignalSpy moves(commands, &PtzCommandController::moveRequested);
+    QSignalSpy keys(keyboard, &PtzKeyboardController::moveRequested);
+    commands->setButtonMovement(0.3F, 0); QCOMPARE(moves.count(), 1);
+    tabs->setCurrentIndex(4); QCoreApplication::processEvents();
+    QCOMPARE(stopped.count(), 1); QVERIFY(device->isVisible()); QVERIFY(connection->isVisible()); QVERIFY(!view->isVisible());
+    auto *dummy = window.findChild<DummyDataProvider *>();
+    // 비관제 페이지에서 상태 갱신이 와도 단축키가 다시 켜지면 안 된다.
+    dummy->requestCameraStatus(QStringLiteral("CAM01"));
+    QTest::keyClick(&window, Qt::Key_Right); QTest::qWait(250);
+    QCOMPARE(keys.count(), 0); QCOMPARE(moves.count(), 1);
+    auto *settings = window.findChild<QTabWidget *>(QStringLiteral("settingsPages"));
+    settings->setCurrentWidget(window.findChild<SystemLogWidget *>());
+    QVERIFY(window.findChild<SystemLogWidget *>()->isVisible());
+    tabs->setCurrentIndex(1); QVERIFY(window.findChild<PlaybackWidget *>()->isVisible());
+    tabs->setCurrentIndex(2); QVERIFY(window.findChild<EventSearchWidget *>()->isVisible());
+    tabs->setCurrentIndex(3); QVERIFY(window.findChild<ChatSearchWidget *>()->isVisible());
+    tabs->setCurrentIndex(0); window.setFocus();
+    QTest::keyClick(&window, Qt::Key_Right); QCOMPARE(keys.count(), 1);
+    // 필요할 때만 테스트 실행자가 실제 위젯 배치의 미리보기를 저장한다.
+    const auto preview = qEnvironmentVariable("VMS_UI_LAYOUT_PREVIEW");
+    if (!preview.isEmpty()) {
+        QVERIFY(window.grab().save(preview));
+        for (int i = 1; i < pages.size(); ++i) {
+            if (i == 4) settings->setCurrentIndex(0);
+            tabs->setCurrentIndex(i); QCoreApplication::processEvents();
+            QVERIFY(window.grab().save(preview + QStringLiteral(".%1.png").arg(pages[i].toLower())));
+        }
+    }
+}
 
 void MiniVmsUiTests::cameraSelectionAndDummyIsolation() {
     MainWindow window;
@@ -44,7 +93,7 @@ void MiniVmsUiTests::cameraSelectionAndDummyIsolation() {
     auto *ptz = window.findChild<PTZControlWidget *>(); QVERIFY(ptz->isEnabled());
     list->findChild<QListWidget *>()->setCurrentRow(1);
     QCOMPARE(list->selectedCameraId(), QStringLiteral("CAM02")); QVERIFY(!ptz->isEnabled());
-    auto *dummy = window.findChild<QCheckBox *>(); dummy->setChecked(false);
+    auto *dummy = window.findChild<QCheckBox *>(QStringLiteral("dummyModeToggle")); dummy->setChecked(false);
     QVERIFY(list->selectedCameraId().isEmpty()); QVERIFY(!ptz->isEnabled());
     dummy->setChecked(true); QCOMPARE(list->selectedCameraId(), QStringLiteral("CAM01"));
 }
@@ -89,7 +138,7 @@ void MiniVmsUiTests::eventOpensPlaybackAtTimestamp() {
     QCOMPARE(window.findChild<QTabWidget *>()->currentWidget(), static_cast<QWidget *>(playback));
     QCOMPARE(playback->findChild<QSlider *>()->value(), 1882);
     QVERIFY(playback->findChild<QSlider *>()->isEnabled());
-    window.findChild<QCheckBox *>()->setChecked(false); QVERIFY(!playback->findChild<QSlider *>()->isEnabled());
+    window.findChild<QCheckBox *>(QStringLiteral("dummyModeToggle"))->setChecked(false); QVERIFY(!playback->findChild<QSlider *>()->isEnabled());
 }
 void MiniVmsUiTests::keyboardStopsAndIgnoresInputFields() {
     QWidget window; QLineEdit input(&window); input.move(0, 0); window.show();
@@ -107,7 +156,9 @@ void MiniVmsUiTests::unsupportedVmsControlsAndStreamAddress() {
     MainWindow window(nullptr, false);
     QVERIFY(!window.findChild<PTZControlWidget *>()->isEnabled());
     QVERIFY(!window.findChild<TrackingPanel *>()->isEnabled());
-    QVERIFY(!window.findChild<QTabWidget *>()->isTabEnabled(0));
+    auto *navigation = window.findChild<QTabWidget *>(QStringLiteral("mainNavigation"));
+    QVERIFY(navigation->isTabEnabled(0));
+    QVERIFY(!navigation->isTabEnabled(navigation->indexOf(window.findChild<EventSearchWidget *>())));
     auto *view = window.findChild<CameraViewWidget *>();
     auto *method = view->findChild<QComboBox *>();
     QCOMPARE(method->count(), 2);
@@ -203,7 +254,11 @@ void MiniVmsUiTests::recordingFilePlaysAndSeeks() {
     playback.setRecordings({recording});
     auto *results = playback.findChild<QComboBox *>(QStringLiteral("recordingResults"));
     QSignalSpy frames(&playback, &PlaybackWidget::playbackFrameReceived), errors(&playback, &PlaybackWidget::playbackFailed);
-    results->setCurrentIndex(0); emit results->activated(0);
+    auto *recordingList = playback.findChild<QListView *>(QStringLiteral("recordingList"));
+    QVERIFY(recordingList); QCOMPARE(recordingList->model(), results->model());
+    const auto first = recordingList->model()->index(0, 0);
+    QTest::mouseClick(recordingList->viewport(), Qt::LeftButton, Qt::NoModifier, recordingList->visualRect(first).center());
+    QCOMPARE(results->currentIndex(), 0);
     QTRY_VERIFY_WITH_TIMEOUT(frames.count() > 0 || errors.count() > 0, 10000);
     QVERIFY2(errors.isEmpty(), errors.isEmpty() ? "" : qPrintable(errors.first()[0].toString()));
     QCOMPARE(frames.first()[0].toSize(), QSize(160, 120));

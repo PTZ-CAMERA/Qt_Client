@@ -1,4 +1,6 @@
 // UI controller. WebSocket/JSON parsing belongs to VmsClient.
+// 위젯 연결·선택 상태를 조립하는 계층이다. DB/ONVIF/추론을 UI에서 수행하지 않는다.
+// 카메라·연결 세대가 바뀌면 이전 요청/metadata를 무효화해 다른 영상에 적용하지 않는다.
 #include "MainWindow.h"
 #include "camera/CameraListWidget.h"
 #include "camera/CameraViewWidget.h"
@@ -25,6 +27,7 @@
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <QTabBar>
 #include <QVBoxLayout>
 #include <QPushButton>
 #include <QShortcut>
@@ -45,8 +48,13 @@ MainWindow::MainWindow(QWidget *parent, bool dummyMode) : QMainWindow(parent) {
     auto *header = new QHBoxLayout;
     auto *title = new QLabel(QStringLiteral("EDGE AI PTZ  /  MINI VMS"), this); title->setObjectName(QStringLiteral("appHeading"));
     header->addWidget(title); header->addStretch();
-    m_dummyToggle = new QCheckBox(QStringLiteral("Dummy Mode / NO VMS NETWORK"), this); header->addWidget(m_dummyToggle);
-    m_headerVms = new StatusIndicatorWidget(QStringLiteral("VMS"), this); header->addWidget(m_headerVms);
+    m_dummyToggle = new QCheckBox(QStringLiteral("Dummy Mode / NO VMS NETWORK"), this);
+    m_dummyToggle->setObjectName(QStringLiteral("dummyModeToggle"));
+    auto *demoBadge = new QLabel(QStringLiteral("DEMO · NO VMS NETWORK"), this);
+    demoBadge->setObjectName(QStringLiteral("modeBadge")); header->addWidget(demoBadge);
+    demoBadge->setVisible(dummyMode);
+    connect(m_dummyToggle, &QCheckBox::toggled, demoBadge, &QWidget::setVisible);
+    m_headerVms = new StatusIndicatorWidget(QStringLiteral("VMS"), this);
     auto *helpButton = new QPushButton(QStringLiteral("?"), this);
     helpButton->setObjectName(QStringLiteral("helpButton")); helpButton->setFixedSize(32, 32);
     helpButton->setToolTip(QStringLiteral("사용 도움말 (F1)")); header->addWidget(helpButton); layout->addLayout(header);
@@ -56,9 +64,12 @@ MainWindow::MainWindow(QWidget *parent, bool dummyMode) : QMainWindow(parent) {
     });
     auto *helpShortcut = new QShortcut(QKeySequence(Qt::Key_F1), this);
     connect(helpShortcut, &QShortcut::activated, helpButton, &QPushButton::click);
-    // 기존 중앙 영상과 오른쪽 패널에 목록을 추가하고 하단 탭은 세로 splitter로 조절한다.
-    auto *vertical = new QSplitter(Qt::Vertical, this); vertical->setChildrenCollapsible(false);
+    // 위젯과 signal/slot은 유지하고 관제·검색·설정을 페이지로 나눈다.
+    m_tabs = new QTabWidget(this); m_tabs->setObjectName(QStringLiteral("mainNavigation"));
+    m_tabs->setDocumentMode(true);
+    m_tabs->tabBar()->setDrawBase(false);
     auto *top = new QSplitter(Qt::Horizontal, this); top->setChildrenCollapsible(false);
+    top->setObjectName(QStringLiteral("livePage"));
     m_list = new CameraListWidget(this); top->addWidget(makePanel(QStringLiteral("CAMERAS"), m_list));
     m_view = new CameraViewWidget(this); top->addWidget(makePanel(QStringLiteral("LIVE VIEW"), m_view));
     auto *rightScroll = new QScrollArea(this); rightScroll->setWidgetResizable(true); rightScroll->setMinimumWidth(250);
@@ -77,7 +88,8 @@ MainWindow::MainWindow(QWidget *parent, bool dummyMode) : QMainWindow(parent) {
     rightLayout->addWidget(makePanel(QStringLiteral("TRACKING / OBJECT INFORMATION"), m_tracking));
     m_diagnostics = new QLabel(QStringLiteral("VMS 연결 후 탐지·저장 상태를 확인합니다."),this);
     m_diagnostics->setObjectName(QStringLiteral("metadataDiagnostics")); m_diagnostics->setWordWrap(true);
-    m_autoRecording=new QCheckBox(QStringLiteral("자동 녹화 · Tracking ON에서 사람 탐지 시"),this);
+    m_autoRecording=new QCheckBox(QStringLiteral("사람 탐지 자동 녹화"),this);
+    m_autoRecording->setToolTip(QStringLiteral("Tracking ON 상태에서 사람이 탐지되면 자동 녹화합니다."));
     m_autoRecording->setObjectName(QStringLiteral("autoRecordingToggle")); m_autoRecording->setEnabled(false);
     rightLayout->addWidget(m_autoRecording);
     connect(m_autoRecording,&QCheckBox::toggled,this,[this](bool enabled){
@@ -91,7 +103,7 @@ MainWindow::MainWindow(QWidget *parent, bool dummyMode) : QMainWindow(parent) {
         m_autoRecording->setChecked(enabled); m_autoRecording->setEnabled(m_client->isConnected() && m_current.supportsEvents);
         addLog(QStringLiteral("REC"),enabled ? QStringLiteral("탐지 자동 녹화 ON · Tracking ON 필요") : QStringLiteral("탐지 자동 녹화 OFF"));
     });
-    rightLayout->addWidget(makePanel(QStringLiteral("DETECTION / RECORDING STATUS"),m_diagnostics)); rightLayout->addStretch();
+    rightLayout->addStretch();
     // DB 조회는 비동기로 요청하며 이전 요청이 끝나기 전에는 중복 조회하지 않는다.
     m_diagnosticsTimer.setInterval(2000);
     connect(&m_diagnosticsTimer,&QTimer::timeout,this,[this]{
@@ -123,25 +135,45 @@ MainWindow::MainWindow(QWidget *parent, bool dummyMode) : QMainWindow(parent) {
     });
     rightScroll->setWidget(right); top->addWidget(rightScroll);
     top->setStretchFactor(0, 0); top->setStretchFactor(1, 1); top->setStretchFactor(2, 0); top->setSizes({200, 850, 280});
-    vertical->addWidget(top); m_tabs = new QTabWidget(this);
     m_events = new EventSearchWidget(this); m_playback = new PlaybackWidget(this); m_device = new DeviceInfoWidget(this);
     m_connection = new ConnectionStatusWidget(this, ConnectionStatusWidget::Purpose::VmsServer);
-    auto *devicePage = new QWidget(this); auto *deviceRow = new QHBoxLayout(devicePage);
-    deviceRow->addWidget(makePanel(QStringLiteral("VMS SERVER"), m_connection), 1); deviceRow->addWidget(m_device, 3);
+    auto *settings = new QTabWidget(this); settings->setObjectName(QStringLiteral("settingsPages"));
+    auto *deviceScroll = new QScrollArea(this); deviceScroll->setWidgetResizable(true);
+    auto *devicePage = new QWidget(this); auto *deviceRow = new QVBoxLayout(devicePage);
+    auto *serverRow = new QHBoxLayout;
+    serverRow->addWidget(makePanel(QStringLiteral("VMS SERVER"), m_connection), 1);
+    serverRow->addWidget(makePanel(QStringLiteral("CONNECTION STATUS"), m_headerVms), 1);
+    deviceRow->addLayout(serverRow);
+    deviceRow->addWidget(makePanel(QStringLiteral("CAMERA MANAGEMENT / STATUS"), m_device));
+    deviceRow->addStretch(); deviceScroll->setWidget(devicePage);
     m_log = new SystemLogWidget(this);
-    m_tabs->addTab(m_events, QStringLiteral("EVENTS")); m_tabs->addTab(m_playback, QStringLiteral("PLAYBACK"));
-    m_tabs->addTab(devicePage, QStringLiteral("DEVICE")); m_tabs->addTab(m_log, QStringLiteral("SYSTEM LOG"));
-    m_chat=new ChatSearchWidget(this); m_tabs->addTab(m_chat,QStringLiteral("CHAT SEARCH"));
-    m_tabs->setTabEnabled(0, false); m_events->setEnabled(false);
-    m_tabs->setTabToolTip(0, QStringLiteral("탐지 샘플·상태 이력 검색 / 결과 더블클릭 녹화 조회"));
+    auto *diagnosticsPage = new QWidget(this); auto *diagnosticsLayout = new QVBoxLayout(diagnosticsPage);
+    diagnosticsLayout->addWidget(makePanel(QStringLiteral("DETECTION / RECORDING STATUS"), m_diagnostics));
+    diagnosticsLayout->addWidget(m_dummyToggle); diagnosticsLayout->addStretch();
+    settings->addTab(deviceScroll, QStringLiteral("CONNECTION / CAMERAS"));
+    settings->addTab(m_log, QStringLiteral("SYSTEM LOG"));
+    settings->addTab(diagnosticsPage, QStringLiteral("DIAGNOSTICS"));
+    m_chat=new ChatSearchWidget(this);
+    m_tabs->addTab(top, QStringLiteral("LIVE"));
+    m_tabs->addTab(m_playback, QStringLiteral("PLAYBACK"));
+    m_tabs->addTab(m_events, QStringLiteral("EVENTS"));
+    m_tabs->addTab(m_chat, QStringLiteral("SEARCH"));
+    m_tabs->addTab(settings, QStringLiteral("SETTINGS"));
+    m_tabs->setCurrentWidget(top);
+    m_tabs->setTabEnabled(m_tabs->indexOf(m_events), false); m_events->setEnabled(false);
+    m_tabs->setTabToolTip(m_tabs->indexOf(m_events), QStringLiteral("탐지 샘플·상태 이력 검색 / 결과 더블클릭 녹화 조회"));
+    // 숨겨진 Live의 PTZ 단축키가 검색·재생 화면의 키 입력을 가로채지 않게 한다.
+    connect(m_tabs, &QTabWidget::currentChanged, this, [this, top] {
+        requestStop();
+        m_keyboard->setEnabled(m_tabs->currentWidget() == top && m_ptz->isEnabled());
+    });
     m_metadataExpiry.setSingleShot(true); m_metadataExpiry.setInterval(2000);
     connect(&m_metadataExpiry,&QTimer::timeout,this,[this]{
         m_view->clearDetection(); m_metadata[QStringLiteral("detected")]=QJsonValue::Null;
         m_metadata[QStringLiteral("errorX")]=QJsonValue::Null; m_metadata[QStringLiteral("errorY")]=QJsonValue::Null;
         if (!m_dummy->isEnabled()) m_tracking->updateMetadata(m_metadata);
     });
-    vertical->addWidget(m_tabs); vertical->setStretchFactor(0, 3); vertical->setStretchFactor(1, 1); vertical->setSizes({520, 250});
-    layout->addWidget(vertical, 1);
+    layout->addWidget(m_tabs, 1);
     m_vmsStatus = new StatusIndicatorWidget(QStringLiteral("VMS"), this); m_cameraStatus = new StatusIndicatorWidget(QStringLiteral("Camera"), this);
     m_streamStatus = new StatusIndicatorWidget(QStringLiteral("Stream"), this); m_recStatus = new StatusIndicatorWidget(QStringLiteral("REC"), this);
     for (auto *indicator : {m_vmsStatus, m_cameraStatus, m_streamStatus, m_recStatus}) statusBar()->addWidget(indicator, 1);
@@ -158,7 +190,7 @@ MainWindow::MainWindow(QWidget *parent, bool dummyMode) : QMainWindow(parent) {
             m_diagnosticsRequestId.clear(); m_diagnostics->setText(QStringLiteral("VMS 연결 끊김 · 상태 미확인"));
             m_metadata={}; m_metadataSourceTimes.clear(); m_metadataExpiry.stop(); m_playbackRequestId.clear();
             m_client->cancelInteractiveRequests(); m_events->resetResults(); m_events->setSearchAvailable(false);
-            m_chat->setContext({},false); m_tabs->setTabEnabled(0,false);
+            m_chat->setContext({},false); m_tabs->setTabEnabled(m_tabs->indexOf(m_events),false);
             requestStop(); m_ptzCommands->setTarget(QString(), false);
             m_discoveryRequestId.clear(); m_device->setDiscoveryState(false, QStringLiteral("Connect to VMS first"));
             m_playback->setSearchAvailable(false);
@@ -167,7 +199,7 @@ MainWindow::MainWindow(QWidget *parent, bool dummyMode) : QMainWindow(parent) {
             m_cameras.clear(); m_events->setCameras({}); m_events->setEvents({});
             m_playback->setCameras({}); m_playback->clear(); m_playback->setRecordings({}); m_list->setCameras({});
         }
-        else { m_events->setRealMode(true); m_events->setSearchAvailable(true); m_tabs->setTabEnabled(0,true); m_events->setEnabled(true); }
+        else { m_events->setRealMode(true); m_events->setSearchAvailable(true); m_tabs->setTabEnabled(m_tabs->indexOf(m_events),true); m_events->setEnabled(true); }
     });
     connect(m_client, &VmsClient::connectionError, this, [this](const QString &reason) {
         if (m_dummy->isEnabled()) return;
@@ -252,7 +284,7 @@ MainWindow::MainWindow(QWidget *parent, bool dummyMode) : QMainWindow(parent) {
         addLog(QStringLiteral("STREAM"), reason);
     });
     connect(m_view, &CameraViewWidget::videoFrameReceived, this, [this](const QSize &) {
-        m_streamStatus->setState(QStringLiteral("Live (VMS)"), StatusIndicatorWidget::State::Active);
+        m_streamStatus->setState(QStringLiteral("RTSP %1").arg(m_view->selectedTransport().toUpper()), StatusIndicatorWidget::State::Active);
     });
     connect(m_view, &CameraViewWidget::playbackError, this, [this](const QString &reason) {
         m_liveWanted = false; m_streamRequestPending = false;
@@ -404,7 +436,7 @@ MainWindow::MainWindow(QWidget *parent, bool dummyMode) : QMainWindow(parent) {
     });
     connect(m_dummyToggle, &QCheckBox::toggled, this, [this](bool enabled) {
         m_device->setDiscoveryState(false, QStringLiteral("Connect to VMS first"));
-        m_events->setRealMode(!enabled); m_events->setSearchAvailable(enabled); m_events->setEnabled(enabled); m_tabs->setTabEnabled(0, enabled);
+        m_events->setRealMode(!enabled); m_events->setSearchAvailable(enabled); m_events->setEnabled(enabled); m_tabs->setTabEnabled(m_tabs->indexOf(m_events), enabled);
         m_chat->setContext({},false); m_client->cancelInteractiveRequests(); m_playbackRequestId.clear(); m_metadata={}; m_metadataSourceTimes.clear(); m_metadataExpiry.stop();
         requestStop(); m_keyboard->setEnabled(false); m_playback->clear(); m_liveWanted = false; m_streamRequestPending = false; m_view->stopStream(); m_client->disconnectFromServer(); m_dummy->setEnabled(enabled);
         m_playback->setSearchAvailable(enabled);
@@ -471,7 +503,7 @@ void MainWindow::applyCameraStatus(const CameraInfo &camera) {
         : camera.recording ? StatusIndicatorWidget::State::Active : StatusIndicatorWidget::State::Inactive);
     if (!m_dummy->isEnabled()) {
         const bool live = camera.online && m_view->isLive();
-        const QString streamText = live ? QStringLiteral("Live (Camera)") : camera.online
+        const QString streamText = live ? QStringLiteral("RTSP %1").arg(m_view->selectedTransport().toUpper()) : camera.online
             ? m_liveWanted ? QStringLiteral("Connecting (Camera)") : QStringLiteral("Idle") : camera.rtspStatus;
         m_streamStatus->setState(streamText, live ? StatusIndicatorWidget::State::Active
             : camera.status == QStringLiteral("ERROR") ? StatusIndicatorWidget::State::Error : StatusIndicatorWidget::State::Inactive);
@@ -491,9 +523,9 @@ void MainWindow::applyCameraStatus(const CameraInfo &camera) {
     m_ptzNotice->setText(camera.supportsPtz ? QStringLiteral("PTZ via VMS · Manual move cancels tracking") : QStringLiteral("PTZ requires VMS capability"));
     m_tracking->setEnabled((m_dummy->isEnabled() && camera.online) || (!m_dummy->isEnabled() && (camera.supportsTracking || camera.supportsEvents || !m_metadata.isEmpty())));
     m_tracking->setControlAvailable((camera.online || m_metadata.value(QStringLiteral("tracking")).toBool()) && (m_dummy->isEnabled() || (m_client->isConnected() && camera.supportsTracking)));
-    m_keyboard->setEnabled(enabled);
+    m_keyboard->setEnabled(enabled && m_tabs->currentIndex() == 0);
     m_chat->setContext(camera.id,!m_dummy->isEnabled() && m_client->isConnected() && camera.supportsChatSearch);
-    if (!m_dummy->isEnabled() && m_client->isConnected()) { m_events->setRealMode(true); m_events->setSearchAvailable(true); m_events->setEnabled(true); m_tabs->setTabEnabled(0,true); }
+    if (!m_dummy->isEnabled() && m_client->isConnected()) { m_events->setRealMode(true); m_events->setSearchAvailable(true); m_events->setEnabled(true); m_tabs->setTabEnabled(m_tabs->indexOf(m_events),true); }
 }
 void MainWindow::requestMetadataPlayback(const QJsonObject &record) {
     if (m_dummy->isEnabled()) return;

@@ -24,7 +24,7 @@ int main(int argc, char *argv[])
     });
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("Mini VMS Desktop Client"));
-    // 기본 Dummy Mode; --no-dummy로 시작하면 DEVICE에서 VMS에 연결한다.
+    // 기본 Dummy Mode; --no-dummy로 시작하면 SETTINGS에서 VMS에 연결한다.
     MainWindow window(nullptr, !app.arguments().contains(QStringLiteral("--no-dummy")));
     window.show();
     // 이벤트 루프가 종료되면 지역 변수인 window와 app도 순서대로 정리된다.

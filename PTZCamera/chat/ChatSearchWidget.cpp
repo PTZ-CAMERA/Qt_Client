@@ -12,10 +12,12 @@
 #include <cmath>
 ChatSearchWidget::ChatSearchWidget(QWidget *parent):QWidget(parent) {
     auto *layout=new QVBoxLayout(this);
-    auto *hint=new QLabel(QStringLiteral("예: 오늘 사람이 나온 기록을 신뢰도 90% 이상으로 찾아줘 · 시간 기준 Asia/Seoul · 영상 분석은 Pi, 조건 해석은 Gemini가 담당합니다."),this);
+    auto *heading = new QLabel(QStringLiteral("SEARCH RECORDINGS"), this);
+    heading->setObjectName(QStringLiteral("panelHeading")); layout->addWidget(heading);
+    auto *hint=new QLabel(QStringLiteral("예: 오늘 사람이 나온 기록을 신뢰도 90% 이상으로 찾아줘 · 시간 기준 Asia/Seoul"),this);
     hint->setWordWrap(true); layout->addWidget(hint);
     m_history=new QPlainTextEdit(this); m_history->setReadOnly(true); m_history->setMaximumBlockCount(300);
-    m_history->setObjectName(QStringLiteral("chatHistory")); m_history->setMaximumHeight(110); layout->addWidget(m_history);
+    m_history->setObjectName(QStringLiteral("chatHistory")); m_history->setMaximumHeight(85);
     auto *entry=new QHBoxLayout;
     m_input=new QLineEdit(this); m_input->setObjectName(QStringLiteral("chatInput")); m_input->setMaxLength(512);
     m_input->setPlaceholderText(QStringLiteral("검색할 날짜·시간·조건을 입력하세요. 두 번째 결과 재생 같은 후속 질문도 가능합니다."));
@@ -31,6 +33,7 @@ ChatSearchWidget::ChatSearchWidget(QWidget *parent):QWidget(parent) {
     m_next=new QPushButton(QStringLiteral("다음 페이지"),this); m_next->setObjectName(QStringLiteral("chatNext"));
     m_play=new QPushButton(QStringLiteral("선택 녹화 재생"),this); m_play->setObjectName(QStringLiteral("chatPlay"));
     bottom->addWidget(m_status,1); bottom->addWidget(m_next); bottom->addWidget(m_play); layout->addLayout(bottom);
+    layout->addWidget(m_history);
     connect(m_send,&QPushButton::clicked,this,[this]{submit(m_input->text());});
     connect(m_input,&QLineEdit::returnPressed,m_send,&QPushButton::click);
     connect(m_next,&QPushButton::clicked,this,[this]{submit(QStringLiteral("다음 페이지 보여줘"));});
@@ -46,7 +49,7 @@ void ChatSearchWidget::setContext(const QString &camera,bool available) {
         m_history->clear(); m_input->clear();
     }
     m_cameraId=camera; m_available=available && !camera.isEmpty();
-    if (changed && m_requestId.isEmpty()) m_status->setText(m_available ? QStringLiteral("%1 · 검색 결과 재생은 추정 시각 기준입니다.").arg(camera) : QStringLiteral("VMS 연결 및 chatSearch capability가 필요합니다. Dummy에서는 실제 채팅을 보내지 않습니다."));
+    if (changed && m_requestId.isEmpty()) m_status->setText(m_available ? QStringLiteral("%1 · 검색 결과 재생은 추정 시각 기준입니다.").arg(camera) : QStringLiteral("VMS에 연결하고 검색 가능한 카메라를 선택하세요. 데모 모드에서는 검색할 수 없습니다."));
     updateButtons();
 }
 void ChatSearchWidget::updateButtons() {

@@ -4,6 +4,7 @@
 class MiniVmsUiTests : public QObject {
     Q_OBJECT
 private slots:
+    void navigationKeepsControlsAndStopsHiddenPtz();
     void cameraSelectionAndDummyIsolation();
     void ptzPressRelease();
     void trackingStatusDoesNotSendCommand();

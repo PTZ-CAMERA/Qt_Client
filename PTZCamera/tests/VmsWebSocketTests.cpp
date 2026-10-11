@@ -68,6 +68,7 @@ public:
         return result;
     }
     QList<QJsonObject> ptzRequests;
+    QList<QJsonObject> receivedRequests;
     MockVms() {
         if (!server.listen(QHostAddress::LocalHost, 0)) qFatal("Cannot start test WebSocket server");
         connect(&server, &QWebSocketServer::newConnection, this, [this] {
@@ -75,6 +76,7 @@ public:
             connect(socket, &QWebSocket::textMessageReceived, this, [this, socket](const QString &message) {
                 if (silent) return;
                 const auto request = QJsonDocument::fromJson(message.toUtf8()).object();
+                receivedRequests.append(request);
                 const auto command = request.value("command").toString();
                 QJsonObject reply{{"version", 1}, {"type", "response"}, {"requestId", request.value("requestId")}, {"ok", true}};
                 if (command == QStringLiteral("GET_CAMERA_LIST")) reply.insert("data", QJsonObject{{"cameras", QJsonArray{featureCamera()}}});
@@ -120,6 +122,38 @@ public:
     }
 };
 }
+void VmsWebSocketTests::movedPagesPreserveRegistrationAndRecordingRequests() {
+    MockVms server; server.features = true;
+    MainWindow window(nullptr, false); window.show();
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("mainNavigation"));
+    auto *client = window.findChild<VmsClient *>();
+    emit window.findChild<ConnectionStatusWidget *>()->connectRequested(QStringLiteral("127.0.0.1"), server.server.serverPort());
+    QTRY_VERIFY(client->isConnected());
+    QTRY_COMPARE(window.findChild<CameraListWidget *>()->selectedCameraId(), QStringLiteral("CAM01"));
+    const auto received = [&](const QString &command) {
+        return std::any_of(server.receivedRequests.cbegin(), server.receivedRequests.cend(), [&](const QJsonObject &r) {
+            return r.value("command").toString() == command;
+        });
+    };
+    tabs->setCurrentIndex(4);
+    window.findChild<QLineEdit *>(QStringLiteral("onvifService"))->setText(QStringLiteral("http://127.0.0.1/onvif/device_service"));
+    window.findChild<QPushButton *>(QStringLiteral("registerOnvifCamera"))->click();
+    QTRY_VERIFY(received(QStringLiteral("REGISTER_CAMERA")));
+    tabs->setCurrentIndex(0);
+    auto *view = window.findChild<CameraViewWidget *>();
+    auto *start = view->findChild<QPushButton *>(QStringLiteral("recordingStart"));
+    auto *stop = view->findChild<QPushButton *>(QStringLiteral("recordingStop"));
+    QVERIFY(start->isEnabled()); start->click(); QTRY_VERIFY(received(QStringLiteral("START_RECORDING")));
+    auto status = server.featureCamera(); status["recording"] = true; status["recordingRequested"] = true; status["recordingState"] = "RECORDING";
+    server.sockets.first()->sendTextMessage(text({{"version",1},{"type","notification"},{"event","CAMERA_STATUS"},{"cameraId","CAM01"},{"data",QJsonObject{{"camera",status}}}}));
+    QTRY_VERIFY(stop->isEnabled());
+    const int before = server.receivedRequests.size();
+    tabs->setCurrentIndex(1); tabs->setCurrentIndex(3); tabs->setCurrentIndex(0); QTest::qWait(50);
+    for (int i = before; i < server.receivedRequests.size(); ++i)
+        QVERIFY(server.receivedRequests[i].value("command").toString() != QStringLiteral("STOP_RECORDING"));
+    stop->click(); QTRY_VERIFY(received(QStringLiteral("STOP_RECORDING")));
+}
+
 void VmsWebSocketTests::trackingUsesConfirmedMetadataAndSurvivesIdleFocusChanges() {
     MockVms server; server.tracking=true; server.ptz=true;
     MainWindow window(nullptr,false); window.show();
@@ -208,11 +242,12 @@ void VmsWebSocketTests::metadataSearchChatAndScopeIsolation() {
 }
 void VmsWebSocketTests::dummyConnectAndDiscoveryButtons() {
     MockVms server; MainWindow window; window.show();
+    window.findChild<QTabWidget *>(QStringLiteral("mainNavigation"))->setCurrentIndex(4);
     auto *connection = window.findChild<ConnectionStatusWidget *>();
     auto *client = window.findChild<VmsClient *>();
     auto *discover = window.findChild<QPushButton *>(QStringLiteral("discoverOnvifCameras"));
     auto *devices = window.findChild<QComboBox *>(QStringLiteral("onvifDevices"));
-    auto *dummy = window.findChild<QCheckBox *>();
+    auto *dummy = window.findChild<QCheckBox *>(QStringLiteral("dummyModeToggle"));
     QPushButton *connectButton = nullptr;
     for (auto *button : connection->findChildren<QPushButton *>()) if (button->text() == QStringLiteral("Connect")) connectButton = button;
     QVERIFY(connectButton); QVERIFY(discover); QVERIFY(devices); QVERIFY(dummy->isChecked());
@@ -286,7 +321,7 @@ void VmsWebSocketTests::uiClearsRealStateWhenDisconnectedOrDummyEnabled() {
     auto *connection = window.findChild<ConnectionStatusWidget *>();
     auto *client = window.findChild<VmsClient *>();
     auto *list = window.findChild<CameraListWidget *>();
-    auto *dummy = window.findChild<QCheckBox *>();
+    auto *dummy = window.findChild<QCheckBox *>(QStringLiteral("dummyModeToggle"));
     auto *ptz = window.findChild<PTZControlWidget *>();
     emit connection->connectRequested(QStringLiteral("127.0.0.1"), server.server.serverPort());
     QTRY_VERIFY(client->isConnected()); QTRY_COMPARE(list->selectedCameraId(), QStringLiteral("CAM01"));
@@ -386,7 +421,7 @@ db.execute('INSERT INTO detection_index VALUES(?,?,?,?)',(s.lastrowid,'CAM01',st
         QTRY_VERIFY(std::any_of(failures.begin(),failures.end(),[&](const QList<QVariant>& row){return row[0].toString()==chatId && row[1].toString()==QStringLiteral("CHAT_DISABLED");}));
     }
     if (!liveConfig.isEmpty()) {
-        window.show(); window.findChild<QTabWidget *>()->setCurrentIndex(2);
+        window.show(); window.findChild<QTabWidget *>(QStringLiteral("mainNavigation"))->setCurrentIndex(4);
         auto *device = window.findChild<DeviceInfoWidget *>();
         auto *view = window.findChild<CameraViewWidget *>();
         QSignalSpy discovery(client, &VmsClient::discoveryReceived);

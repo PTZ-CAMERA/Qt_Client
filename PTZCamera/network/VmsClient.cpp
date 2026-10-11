@@ -1,4 +1,6 @@
 #include "VmsClient.h"
+// Qt UI 스레드의 비동기 adapter다. requestId로 응답을 묶고 최신 검색만 적용한다.
+// PTZ의 접수/Pi 응답은 별도로 추적하며 실제 Tracking 상태는 metadata에서 확인한다.
 #include <QAbstractSocket>
 #include <QJsonArray>
 #include <QJsonDocument>

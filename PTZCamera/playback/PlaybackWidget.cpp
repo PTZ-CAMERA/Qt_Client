@@ -14,6 +14,9 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSlider>
+#include <QListView>
+#include <QSplitter>
+#include <QFormLayout>
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QMediaPlayer>
@@ -25,10 +28,21 @@
 #include <limits>
 
 PlaybackWidget::PlaybackWidget(QWidget *parent) : QWidget(parent) {
-    auto *layout = new QVBoxLayout(this);
+    auto *pageLayout = new QHBoxLayout(this);
+    auto *splitter = new QSplitter(Qt::Horizontal, this);
+    splitter->setChildrenCollapsible(false); pageLayout->addWidget(splitter);
+    auto *sidebar = new QWidget(this); sidebar->setMinimumWidth(260);
+    auto *sidebarLayout = new QVBoxLayout(sidebar);
+    auto *heading = new QLabel(QStringLiteral("RECORDINGS"), this);
+    heading->setObjectName(QStringLiteral("panelHeading")); sidebarLayout->addWidget(heading);
+    auto *videoPage = new QWidget(this); auto *layout = new QVBoxLayout(videoPage);
+    splitter->addWidget(sidebar); splitter->addWidget(videoPage);
+    splitter->setStretchFactor(0, 0); splitter->setStretchFactor(1, 1); splitter->setSizes({300, 900});
     m_preRoll = new QCheckBox(QStringLiteral("탐지 결과는 2초 전부터 재생 (같은 녹화 파일 범위 내)"),this);
-    m_preRoll->setObjectName(QStringLiteral("metadataPreRoll")); m_preRoll->setChecked(true); layout->addWidget(m_preRoll);
-    auto *searchRow = new QHBoxLayout;
+    m_preRoll->setObjectName(QStringLiteral("metadataPreRoll")); m_preRoll->setChecked(true);
+    m_preRoll->setText(QStringLiteral("탐지 시각 2초 전부터 재생"));
+    m_preRoll->setToolTip(QStringLiteral("같은 녹화 파일 범위 내에서만 적용됩니다."));
+    auto *searchForm = new QFormLayout;
     m_camera = new QComboBox(this); m_date = new QDateEdit(QDate::currentDate(), this);
     m_date->setCalendarPopup(true); m_date->setDisplayFormat(QStringLiteral("yyyy-MM-dd"));
     m_fromTime = new QTimeEdit(QTime(0, 0), this); m_toTime = new QTimeEdit(QTime(23, 59, 59), this);
@@ -46,16 +60,33 @@ PlaybackWidget::PlaybackWidget(QWidget *parent) : QWidget(parent) {
     auto *browse = new QPushButton(QStringLiteral("OPEN FILE"), this);
     browse->setObjectName(QStringLiteral("openRecordingFile"));
     browse->setToolTip(QStringLiteral("Choose a local recording file, including a copy from another VMS"));
-    searchRow->addWidget(m_camera); searchRow->addWidget(m_date);
-    searchRow->addWidget(m_fromTime); searchRow->addWidget(new QLabel(QStringLiteral("~"), this)); searchRow->addWidget(m_toTime);
-    searchRow->addWidget(m_search); searchRow->addWidget(m_recordings, 1); searchRow->addWidget(m_open); searchRow->addWidget(browse);
-    layout->addLayout(searchRow);
+    searchForm->addRow(QStringLiteral("Camera"), m_camera); searchForm->addRow(QStringLiteral("Date"), m_date);
+    searchForm->addRow(QStringLiteral("From"), m_fromTime); searchForm->addRow(QStringLiteral("To"), m_toTime);
+    sidebarLayout->addLayout(searchForm); sidebarLayout->addWidget(m_search);
+    // 기존 combo의 모델·선택·재생 경로를 재사용하고 화면에는 펼쳐진 목록을 제공한다.
+    // 검색 결과/무효화 규칙과 파일 열기 로직은 아래 기존 연결 그대로 유지한다.
+    m_recordings->hide();
+    auto *recordingList = new QListView(this); recordingList->setObjectName(QStringLiteral("recordingList"));
+    recordingList->setModel(m_recordings->model()); recordingList->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    recordingList->setWordWrap(true); sidebarLayout->addWidget(recordingList, 1);
+    connect(recordingList->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex &index) {
+        m_recordings->setCurrentIndex(index.row());
+    });
+    connect(recordingList, &QListView::clicked, this, [this](const QModelIndex &index) {
+        m_recordings->setCurrentIndex(index.row()); openSelectedRecording();
+    });
+    connect(m_recordings, &QComboBox::currentIndexChanged, recordingList, [this, recordingList](int index) {
+        recordingList->setCurrentIndex(m_recordings->model()->index(index, 0));
+    });
+    auto *fileButtons = new QHBoxLayout; fileButtons->addWidget(m_open); fileButtons->addWidget(browse);
+    sidebarLayout->addLayout(fileButtons); sidebarLayout->addWidget(m_preRoll);
 
     auto *resultRow = new QHBoxLayout;
     m_resultCount = new QLabel(QStringLiteral("No search performed"), this);
     m_resultCount->setObjectName(QStringLiteral("recordingResultCount"));
     m_playbackState = new QLabel(this); m_playbackState->setObjectName(QStringLiteral("recordingPlaybackStatus"));
-    resultRow->addWidget(m_resultCount); resultRow->addStretch(); resultRow->addWidget(m_playbackState);
+    m_resultCount->setWordWrap(true); sidebarLayout->addWidget(m_resultCount);
+    m_playbackState->setWordWrap(true); resultRow->addWidget(m_playbackState);
     layout->addLayout(resultRow);
     m_videoStack = new QStackedWidget(this);
     m_video = new QLabel(this); m_video->setAlignment(Qt::AlignCenter); m_video->setMinimumHeight(60);
@@ -166,6 +197,8 @@ void PlaybackWidget::openSelectedRecording() {
     if (index >= 0 && index < m_results.size()) openRecording(m_results[index], m_results[index].startTime);
 }
 bool PlaybackWidget::openPlaybackResult(const QJsonObject &result) {
+    // VMS가 판정한 playable/offset 계약을 사용한다. 현재 위치는 수신 기반 추정이며,
+    // 사전 재생 옵션도 저장된 동일 파일 범위를 벗어나지 않는다.
     clear();
     const QSignalBlocker cameraBlocker(m_camera), dateBlocker(m_date);
     if (!result.value(QStringLiteral("playable")).isBool() || !result.value(QStringLiteral("playable")).toBool()) {

@@ -1,5 +1,5 @@
 // 기존 QPainter CameraWidget을 감싸 카메라 이름과 독립적인 상태 표시를 추가한다.
-// M1에는 서버 스트림 재생을 시작하지 않으며 UI 요청만 외부로 전달한다.
+// URI 조회는 MainWindow/VmsClient에 맡기고 받은 RTSP를 Qt Multimedia로 표시한다.
 #include "CameraViewWidget.h"
 #include "CameraWidget.h"
 #include <QComboBox>
@@ -43,7 +43,8 @@ CameraViewWidget::CameraViewWidget(QWidget *parent) : QWidget(parent) {
     m_online = new QLabel(this); m_live = new QLabel(this); m_rec = new QLabel(this);
     top->addWidget(m_name, 1); top->addWidget(m_online); top->addWidget(m_live); top->addWidget(m_rec);
     layout->addLayout(top);
-    auto *controls = new QHBoxLayout;
+    auto *toolbar = new QWidget(this); toolbar->setObjectName(QStringLiteral("liveToolbar"));
+    auto *controls = new QHBoxLayout(toolbar); controls->setContentsMargins(0, 2, 0, 2); controls->setSpacing(6);
     controls->addWidget(new QLabel(QStringLiteral("Stream"), this));
     m_method = new QComboBox(this);
     m_method->setObjectName(QStringLiteral("rtspTransport"));
@@ -60,7 +61,7 @@ CameraViewWidget::CameraViewWidget(QWidget *parent) : QWidget(parent) {
     controls->addWidget(m_startRec); controls->addWidget(m_stopRec); controls->addStretch();
     connect(m_startRec, &QPushButton::clicked, this, &CameraViewWidget::startRecordingRequested);
     connect(m_stopRec, &QPushButton::clicked, this, &CameraViewWidget::stopRecordingRequested);
-    layout->addLayout(controls);
+    layout->addWidget(toolbar);
     m_view = new CameraWidget(this);
     // VMS의 좌측 목록/하단 탭과 함께 배치해도 영상 위젯이 창의 최소 크기를 과도하게 키우지 않는다.
     m_view->setMinimumSize(320, 180);

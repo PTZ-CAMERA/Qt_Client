@@ -3,6 +3,7 @@
 class VmsWebSocketTests : public QObject {
     Q_OBJECT
 private slots:
+    void movedPagesPreserveRegistrationAndRecordingRequests();
     void dummyConnectAndDiscoveryButtons();
     void connectionQueriesNotificationsAndErrors();
     void reconnectAndRequestTimeout();

@@ -70,11 +70,11 @@ flowchart LR
 | 안전 정지 | 포커스 상실·창 비활성화·카메라 전환·연결 해제 시 STOP 요청 |
 | 녹화 | 수동 시작·종료, Tracking ON + 탐지 자동 녹화 모드 선택, 날짜·시간별 완료 파일 검색 |
 | 녹화 재생 | 완료된 로컬 파일 재생, Play/Pause/Stop·탐색, 탐지 2초 전 재생 옵션 |
-| 장치·진단 | DEVICE·SYSTEM LOG·도움말, 마지막 metadata 수신/저장 시각·샘플 수·녹화 상태 |
+| 장치·진단 | SETTINGS의 연결·카메라 관리 / SYSTEM LOG / DIAGNOSTICS, 마지막 metadata 수신/저장 시각·샘플 수·녹화 상태 |
 | Dummy Mode | 서버 없이 샘플 영상·이벤트·타임라인 확인 |
 | 실시간 메타데이터 | VMS 알림으로 bbox·confidence·추적 상태·명령 각도 표시; 오래된 bbox 제거 |
 | EVENTS | 상태 이력/탐지 샘플 검색, confidence 필터·페이지네이션·연결 녹화 재생 |
-| CHAT SEARCH | VMS 자연어 검색, 결과 선택·다음 페이지·녹화 재생 |
+| SEARCH | VMS 자연어 검색, 결과 선택·다음 페이지·녹화 재생 |
 
 Tracking ON/OFF는 지원 카메라에서 활성화됩니다. 요청/Pi 응답과 실제 metadata 상태를 구분하며 수동 PTZ는 추적을 해제합니다. 이벤트 재생은 offsetMs를 사용하고 추정 시각이면 표시합니다. 녹화 파일은 같은 PC에서 접근해야 합니다.
 
@@ -84,17 +84,22 @@ PTZ는 서버의 카메라 capability에 따라 활성화됩니다. `PTZ TX`는 
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│ Edge AI PTZ Mini VMS                Dummy Mode / VMS / ?     │
+│ Edge AI PTZ Mini VMS                                    ?   │
+│ LIVE │ PLAYBACK │ EVENTS │ SEARCH │ SETTINGS                │
 ├──────────────┬──────────────────────────────┬─────────────────┤
 │ CAMERAS      │ LIVE VIEW                    │ PTZ CONTROL     │
 │ Camera List  │ RTSP TCP / UDP · Start/Stop   │ Buttons / Keys  │
 │ Online / REC │ REC START / REC STOP         │ Tracking Info   │
 ├──────────────┴──────────────────────────────┴─────────────────┤
-│ EVENTS │ PLAYBACK │ DEVICE │ SYSTEM LOG │ CHAT SEARCH        │
-├─────────────────────────────────────────────────────────────┤
 │ VMS / Camera / Stream / Recording Status                     │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+기본 페이지는 LIVE입니다. PLAYBACK은 왼쪽 녹화 목록·중앙 영상·하단 재생 제어로 구성됩니다.
+SETTINGS에서 연결/카메라 관리, SYSTEM LOG, DIAGNOSTICS를 확인합니다. 기존 Dummy Mode는
+DIAGNOSTICS로 이동했으며, 켜져 있으면 상단 DEMO 표시로 실제 영상과 구분합니다.
+Live를 떠날 때 진행 중인 수동 PTZ 입력을 정리하고, 다른 페이지에서는 PTZ 단축키를 받지 않습니다.
+영상 수신·녹화·Tracking은 페이지 전환만으로 종료하지 않습니다.
 
 ## 빌드
 
@@ -117,7 +122,7 @@ Qt 설치 경로는 실제 설치 위치에 맞춥니다. Qt Creator 실행 시�
 
 1. Pi 카메라와 ONVIF 서비스를 실행합니다.
 2. PC에서 별도 Mini VMS 서버를 실행합니다.
-3. DEVICE 탭에서 VMS Host/Port를 입력하고 Connect를 누릅니다. 기본값은 `127.0.0.1:5000`입니다.
+3. SETTINGS → CONNECTION / CAMERAS에서 VMS Host/Port를 입력하고 Connect를 누릅니다. 기본값은 `127.0.0.1:5000`입니다.
 4. 기존 카메라를 선택하거나 DISCOVER CAMERAS → 발견 장치 선택 → ADD CAMERA로 등록합니다.
 5. 라이브 Start를 누릅니다. 녹화는 REC START / REC STOP, 검색·재생은 PLAYBACK 탭을 사용합니다.
 
@@ -186,3 +191,7 @@ Web 영상은 VMS 내장 libdatachannel WebRTC를 사용합니다. PC MediaMTX �
 Qt Linux UI/WS, Windows Qt 6.11/MSVC mock 서버·합성 영상의 ms 탐색·2초 사전 재생·자동 모드 응답 시험을 통과했습니다. 실제 Pi 탐지→자동 녹화→자연어 검색→재생 전체 실물 시험과 장시간 시험은 별도입니다.
 
 관련 Pi 저장소: [PTZ_CAMERA](https://github.com/PTZ-CAMERA/PTZ_CAMERA).
+
+## 코드 안내
+
+Qt Creator 진입점과 기존 모듈·legacy 경로는 유지합니다. UI 조립·비동기 통신·재생의 책임과 카메라 전환 시 응답 무효화 규칙은 [CODE_GUIDE](PTZCamera/docs/CODE_GUIDE.md)를 참고하세요. 이번 정리는 주석·문서만 보완하며 기능을 변경하지 않습니다.
