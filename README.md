@@ -1,5 +1,7 @@
 # Mini VMS Desktop Client
 
+[문서 안내](docs/README.md) · [최신 전체 구조도](docs/SYSTEM_ARCHITECTURE.md)
+
 Raspberry Pi 영상은 직접 RTSP로 수신하고 제어·메타데이터·녹화·검색은 PC VMS를 통해 처리하는 **Qt 6 Widgets / C++17** 데스크톱 클라이언트입니다. 기존 영상·PTZ 위젯을 재사용하고 카메라 접속, 녹화, ONVIF 처리는 별도 VMS 서버가 담당합니다.
 
 ## 시스템 구조
@@ -27,7 +29,7 @@ flowchart LR
     subgraph Desktop["Qt Desktop Client"]
         Client[VmsClient · REST / WebSocket]
         Video[Qt Multimedia · RTSP / Recorded Video]
-        UI[Camera List / Live View / PTZ / Device / Playback]
+        UI[LIVE / PLAYBACK / EVENTS / SEARCH / SETTINGS]
         Client --> UI
         Video --> UI
     end
@@ -69,7 +71,7 @@ flowchart LR
 | PTZ | 버튼·방향키·W/A/S/D 누름/놓음, 200ms 갱신, C/R 중앙 복귀 |
 | 안전 정지 | 포커스 상실·창 비활성화·카메라 전환·연결 해제 시 STOP 요청 |
 | 녹화 | 수동 시작·종료, Tracking ON + 탐지 자동 녹화 모드 선택, 날짜·시간별 완료 파일 검색 |
-| 녹화 재생 | 완료된 로컬 파일 재생, Play/Pause/Stop·탐색, 탐지 2초 전 재생 옵션 |
+| 녹화 재생 | 완료된 로컬 파일 재생, Play/Pause/Stop·탐색·목록 복귀, 탐지 2초 전 재생 옵션 |
 | 장치·진단 | SETTINGS의 연결·카메라 관리 / SYSTEM LOG / DIAGNOSTICS, 마지막 metadata 수신/저장 시각·샘플 수·녹화 상태 |
 | Dummy Mode | 서버 없이 샘플 영상·이벤트·타임라인 확인 |
 | 실시간 메타데이터 | VMS 알림으로 bbox·confidence·추적 상태·명령 각도 표시; 오래된 bbox 제거 |
@@ -77,6 +79,8 @@ flowchart LR
 | SEARCH | VMS 자연어 검색, 결과 선택·다음 페이지·녹화 재생 |
 
 Tracking ON/OFF는 지원 카메라에서 활성화됩니다. 요청/Pi 응답과 실제 metadata 상태를 구분하며 수동 PTZ는 추적을 해제합니다. 이벤트 재생은 offsetMs를 사용하고 추정 시각이면 표시합니다. 녹화 파일은 같은 PC에서 접근해야 합니다.
+
+수동 버튼·키보드 이동은 현재 정규화 속도 1.0을 사용합니다. 실제 서보 각속도는 Pi 설정과 하드웨어에 따릅니다.
 
 PTZ는 서버의 카메라 capability에 따라 활성화됩니다. `PTZ TX`는 전송, `PTZ VMS`는 서버 승인, `PTZ PI`는 Pi ONVIF 응답입니다. Pi 응답은 모터의 목표 위치 도달 확인이 아닙니다.
 
@@ -181,16 +185,6 @@ Web 영상은 VMS 내장 libdatachannel WebRTC를 사용합니다. PC MediaMTX �
 오른쪽 자동 녹화 체크박스는 SET_AUTO_RECORDING으로 VMS 모드를 변경합니다. Pi metadata로 확인된 Tracking ON과 사람 탐지가 함께 있어야 자동 시작하며 소실 후 기본 10초 종료, 재탐지 유지, 수동 녹화 보호를 VMS가 처리합니다. 진단은 GET_METADATA_STATUS로 2초마다 조회하고 오래된 탐지 상태는 미확인으로 표시합니다.
 
 녹화 중 파일은 확정 대기, 녹화가 없는 시각은 재생 불가로 표시합니다. Playback의 2초 사전 재생은 동일 완료 파일 범위에만 적용하며 receive_estimated 위치를 정확한 탐지 프레임으로 표시하지 않습니다. 원격 파일 전송 기능은 아직 없습니다.
-
-## Pi 소스 버전 확인
-
-현재 VMS는 Tracking ON/OFF에 기존 ONVIF MoveAndStartTracking/Stop을 사용합니다. 최신 Pi 소스의 /camera/control tracking_set/get 및 Stop 후 자동 복귀 동작을 적용할 때는 VMS adapter를 맞춰야 합니다. Qt는 VMS 명령을 사용하고 Pi에 별도 GPIO/추적 제어를 구현하지 않습니다. 최신 Pi 배포와 실제 Tracking OFF의 전체 연동은 추가 확인 대상입니다.
-
-## 검증 범위
-
-Qt Linux UI/WS, Windows Qt 6.11/MSVC mock 서버·합성 영상의 ms 탐색·2초 사전 재생·자동 모드 응답 시험을 통과했습니다. 실제 Pi 탐지→자동 녹화→자연어 검색→재생 전체 실물 시험과 장시간 시험은 별도입니다.
-
-관련 Pi 저장소: [PTZ_CAMERA](https://github.com/PTZ-CAMERA/PTZ_CAMERA).
 
 ## 코드 안내
 

@@ -3,6 +3,8 @@
 #include <cmath>
 
 PtzCommandController::PtzCommandController(QObject *parent) : QObject(parent) {
+    // GUI 이벤트 루프의 타이머로 누름 상태를 갱신한다. 여기서 ONVIF나 GPIO를 호출하지 않는다.
+    // 서버의 이동 lease보다 짧게 갱신하되, 실제 제어권과 Pi 응답 판정은 VMS가 담당한다.
     m_refresh.setInterval(200);
     connect(&m_refresh, &QTimer::timeout, this, [this] {
         if (m_enabled && !m_cameraId.isEmpty()) emit moveRequested(m_cameraId, m_pan, m_tilt);

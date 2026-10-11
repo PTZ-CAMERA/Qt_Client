@@ -46,3 +46,10 @@ MainWindow의 자동 녹화 체크박스는 SET_AUTO_RECORDING, 진단 패널은
 ChatSearch/Playback은 녹화 중·녹화 없음·기타 재생 실패를 구분하고, 옵션으로 탐지 offset보다 2초 앞에서 동일 파일을 재생합니다. 현재 offset은 추정 시각입니다.
 
 WebRTC는 Web 클라이언트가 VMS 내부 libdatachannel에 연결하는 별도 경로이며 Qt 라이브는 Pi 직접 RTSP입니다. Pi 최신 JSON tracking_set/get과 VMS의 기존 ONVIF Tracking 계약 차이는 저장소 루트 README를 확인하세요.
+
+## 현재 UI와 문서 진입점
+
+LIVE / PLAYBACK / EVENTS / SEARCH / SETTINGS를 사용합니다. Playback의 `← 목록으로`는
+재생을 정리하고 기존 검색 조건·결과를 유지합니다. 수동 PTZ 입력은 정규화 1.0이며
+서보 각속도를 뜻하지 않습니다. [현재 구조](../docs/QT_VMS_CLIENT_ARCHITECTURE.md) ·
+[전체 시스템](../docs/SYSTEM_ARCHITECTURE.md) · [문서 목록](../docs/README.md)
